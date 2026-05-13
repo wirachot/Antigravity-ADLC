@@ -30,7 +30,7 @@ The toolkit provides specialized end-to-end workflows executed directly within y
   5. **Review Gate**: Surfaces the completed spec for human validation and refinement before proceeding to architecture.
 
 #### 3. `/architect` — Architecture & Task Breakdown
-- **Native Behavior**: Breaks workloads into structured tasks and utilizes `generate_image` for stunning UI mockups during conceptualization.
+- **Native Behavior**: Breaks workloads into structured implementation tasks forming a Directed Acyclic Graph (DAG) with explicit file routing.
 - **When to Use**: Use once a requirement spec (`REQ-xxx`) is approved. It designs the technical implementation plan and breaks the workload into granular, executable tasks.
 - **Execution Flow**:
   1. **Grounding**: Loads the validated spec and active coding conventions (`conventions.md`).
