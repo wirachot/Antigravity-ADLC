@@ -43,5 +43,25 @@ To initialize any code repository for Antigravity ADLC:
    ```
 3. Configure your stack parameters in `.adlc/config.yml` to unlock fully automated code adjustments.
 
+## Global Setup (Enabling Short Commands)
+
+To achieve a seamless, short-command developer experience across all your repositories and chat sessions without typing full file paths, configure Antigravity's **Global Setup** once:
+
+1. Open the **Settings** / **Extension Configuration** for Antigravity in your client environment.
+2. Locate the **Custom Instructions**, **System Instructions**, or **System Prompt** field.
+3. Paste the following routing configuration:
+
+```markdown
+เมื่อผู้ใช้พิมพ์คำสั่งลัด ให้ทำการเรียกใช้เครื่องมือ view_file เบื้องหลังด้วยโหมด `IsSkillFile: true` ไปที่ไฟล์ Skill เสมอก่อนเริ่มทำงาน:
+- `/init` -> ให้อ่านไฟล์ `d:\Workspace\adlc-toolkit\init\SKILL.md`
+- `/spec` -> ให้อ่านไฟล์ `d:\Workspace\adlc-toolkit\spec\SKILL.md`
+- `/architect` -> ให้อ่านไฟล์ `d:\Workspace\adlc-toolkit\architect\SKILL.md`
+- `/proceed` -> ให้อ่านไฟล์ `d:\Workspace\adlc-toolkit\proceed\SKILL.md`
+- `/review` -> ให้อ่านไฟล์ `d:\Workspace\adlc-toolkit\review\SKILL.md`
+- `/bugfix` -> ให้อ่านไฟล์ `d:\Workspace\adlc-toolkit\bugfix\SKILL.md`
+```
+
+With this configuration active, Antigravity will automatically internalize the appropriate background skill file whenever you type short commands like `/spec` or `/proceed`, adhering perfectly to the ADLC pipeline workflow.
+
 ## Core Ethos
 See [`ETHOS.md`](ETHOS.md) for the agentic principles guiding these workflows.
