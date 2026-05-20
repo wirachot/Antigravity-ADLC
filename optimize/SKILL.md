@@ -10,7 +10,7 @@ You are scanning this project's API and infrastructure for cost and performance 
 
 ## Ethos
 
-!`cat .adlc/ETHOS.md 2>/dev/null || cat ~/.claude/skills/ETHOS.md 2>/dev/null || echo "No ethos found"`
+!`sh .adlc/partials/ethos-include.sh 2>/dev/null || sh ~/.claude/skills/partials/ethos-include.sh`
 
 ## Context
 
@@ -20,6 +20,10 @@ You are scanning this project's API and infrastructure for cost and performance 
 ## Input
 
 Focus: $ARGUMENTS
+
+## Prerequisites
+
+Before proceeding, verify that `.adlc/context/architecture.md` and `.adlc/context/project-overview.md` exist. If any of these files are missing, stop and tell the user: "The `.adlc/` structure hasn't been initialized. Run `/init` first to set up the project context."
 
 ## Instructions
 

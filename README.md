@@ -27,6 +27,10 @@ Unlike legacy CLI approaches, this toolkit operates **natively within your chat 
 2. **Precision Execution**: Code additions and modifications are dispatched via specialized code-editing tools, eliminating the risk of malformed streaming output.
 3. **Visual Excellence Priority**: When dealing with web/mobile interfaces, Antigravity adheres to modern design principles (glassmorphism, curated palettes, micro-animations) to ensure premium deliverables.
 
+### Standalone Tools
+
+The toolkit also includes standalone command-line utilities (not skills, installed via their own `install.sh`). See [`tools/kimi/`](tools/kimi/README.md) for Kimi K2.5 delegation CLIs (`ask-kimi`, `kimi-write`, `extract-chat`) that offload token-heavy I/O from active chat sessions.
+
 ## Initialization & Setup
 
 To initialize any code repository for Antigravity ADLC:
