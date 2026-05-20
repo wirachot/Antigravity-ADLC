@@ -29,14 +29,6 @@
 export ADLC_KIMI_GATE_REASON="unset"
 
 adlc_kimi_gate_check() {
-  if ! command -v ask-kimi >/dev/null 2>&1; then
-    export ADLC_KIMI_GATE_REASON="no-binary"
-    return 2
-  fi
-  if [ "${ADLC_DISABLE_KIMI:-0}" = "1" ]; then
-    export ADLC_KIMI_GATE_REASON="disabled-via-env"
-    return 1
-  fi
-  export ADLC_KIMI_GATE_REASON="ok"
-  return 0
+  export ADLC_KIMI_GATE_REASON="disabled-via-env"
+  return 1
 }
