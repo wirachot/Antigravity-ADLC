@@ -18,7 +18,7 @@ The toolkit provides specialized end-to-end workflows executed directly within y
 | **`/proceed`** | End-to-end ADLC pipeline that takes a requirement from spec through to deployed. | When the user says "proceed", "run the pipeline", "take REQ-xxx to completion", or wants to advance a drafted requirement all the way through to deployment in one shot. | Step 0 (Setup) → Phase 1 (Validate Spec) → Phase 2 (Architect) → Phase 3 (Validate Tasks) → Phase 4 (Implement) → Phase 5 (Verify) → Phase 6 (PR) → Phase 7 (Cleanup/CI) → Phase 8 (Wrapup) |
 | **`/review`** | Multi-agent code review covering correctness, quality, architecture, test coverage, and security. | Performing a thorough code review of recent changes using multiple specialized review agents. | Determine Scope/Context → Read Changed Files → Launch Review Agents → Consolidate Findings → Present Review → Summary |
 | **`/bugfix`** | End-to-end bug fix workflow — report, analyze, fix, verify, ship (PR + merge + deploy + knowledge capture). | Fixing a bug using a streamlined workflow that skips the full spec ceremony but follows the same deployment strategy as a feature. | Phase 1 (Report) → Phase 2 (Analyze) → Phase 3 (Fix) → Phase 4 (Verify) → Phase 5 (Ship) → Phase 6 (Wrapup) |
-| **`/deploy`** | Auto-analyze, scaffold, deploy, and self-heal applications on Coolify, Railway, AWS, or VPS. | Deploying applications with auto-configuration and self-healing runtime/build errors. | Parse Input → Code Analysis & Scaffold → Auto Env Setup → Platform Integration → Trigger Deploy → Self-Healing Loop → Verification |
+| **`/deploy`** | Auto-analyze, scaffold, deploy, and self-heal applications on Coolify, Railway, AWS, or VPS (orchestrates sub-skills). | Deploying applications with auto-configuration and self-healing runtime/build errors. | Parse Input → `/deploy-analyze` → `/deploy-env` → `/deploy-provision` → `/deploy-trigger` → `/deploy-heal` (loop) → Verification |
 
 ## How it Works with Antigravity
 
@@ -60,6 +60,11 @@ When the user inputs a short command, always execute the `view_file` tool in the
 - `/review` -> Read the file `/path/to/adlc-toolkit/review/SKILL.md`
 - `/bugfix` -> Read the file `/path/to/adlc-toolkit/bugfix/SKILL.md`
 - `/deploy` -> Read the file `/path/to/adlc-toolkit/deploy/SKILL.md`
+- `/deploy-analyze` -> Read the file `/path/to/adlc-toolkit/deploy-analyze/SKILL.md`
+- `/deploy-env` -> Read the file `/path/to/adlc-toolkit/deploy-env/SKILL.md`
+- `/deploy-provision` -> Read the file `/path/to/adlc-toolkit/deploy-provision/SKILL.md`
+- `/deploy-trigger` -> Read the file `/path/to/adlc-toolkit/deploy-trigger/SKILL.md`
+- `/deploy-heal` -> Read the file `/path/to/adlc-toolkit/deploy-heal/SKILL.md`
 ```
 
 With this configuration active, Antigravity will automatically internalize the appropriate background skill file whenever you type short commands like `/spec` or `/proceed`, adhering perfectly to the ADLC pipeline workflow.
