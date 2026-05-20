@@ -19,7 +19,11 @@ Target Path/Git URL: $ARGUMENTS
 ## Instructions
 
 ### Step 1: Clone or Access Codebase
-1. If a Git URL is provided, clone it into a temp directory within the workspace (e.g., `temp-deploy-src/`).
+1. If a Git URL is provided:
+   - Determine if the repository is public (e.g. check if it uses HTTPS, or verify if it can be accessed without authentication).
+   - **For public repositories, do NOT ask the user for SSH keys or SSH configurations.** Clone it directly using HTTPS (convert SSH URLs to HTTPS if needed to avoid ssh-agent prompting).
+   - For private repositories, request the appropriate deployment credentials (SSH key path, deploy token, or PAT) only if they are not already cached.
+   - Clone the repository into a temporary directory within the workspace (e.g., `temp-deploy-src/`).
 2. If no argument is provided, target the current workspace directory.
 
 ### Step 2: Tech Stack Detection

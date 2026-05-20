@@ -35,6 +35,8 @@ If database requirements were detected in the analysis phase:
 
 ### Step 3: Register and Configure Application
 1. Register/create the Application targeting the Git repository URL.
+   - **For public repositories, configure the deployment platform to pull via public HTTPS without requiring or prompting for SSH keys.**
+   - For private repositories, set up the required SSH deploy key or API access tokens.
 2. Configure application settings:
    - Set the public domain name (e.g., `wowmom-adlc.lanna.engineer`).
    - Configure exposure ports (routing traffic from 80/443 to target container port, e.g., 3000).
