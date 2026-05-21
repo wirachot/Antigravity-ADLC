@@ -53,18 +53,18 @@ To achieve a seamless, short-command developer experience across all your reposi
 
 ```markdown
 When the user inputs a short command, always execute the `view_file` tool in the background with `IsSkillFile: true` pointing to the corresponding Skill file before starting work:
-- `/init` -> Read the file `/path/to/adlc-toolkit/init/SKILL.md`
-- `/spec` -> Read the file `/path/to/adlc-toolkit/spec/SKILL.md`
-- `/architect` -> Read the file `/path/to/adlc-toolkit/architect/SKILL.md`
-- `/proceed` -> Read the file `/path/to/adlc-toolkit/proceed/SKILL.md`
-- `/review` -> Read the file `/path/to/adlc-toolkit/review/SKILL.md`
-- `/bugfix` -> Read the file `/path/to/adlc-toolkit/bugfix/SKILL.md`
-- `/deploy` -> Read the file `/path/to/adlc-toolkit/deploy/SKILL.md`
-- `/deploy-analyze` -> Read the file `/path/to/adlc-toolkit/deploy-analyze/SKILL.md`
-- `/deploy-env` -> Read the file `/path/to/adlc-toolkit/deploy-env/SKILL.md`
-- `/deploy-provision` -> Read the file `/path/to/adlc-toolkit/deploy-provision/SKILL.md`
-- `/deploy-trigger` -> Read the file `/path/to/adlc-toolkit/deploy-trigger/SKILL.md`
-- `/deploy-heal` -> Read the file `/path/to/adlc-toolkit/deploy-heal/SKILL.md`
+- `/init` -> Read the file `<PROJECT_ROOT>/init/SKILL.md`
+- `/spec` -> Read the file `<PROJECT_ROOT>/spec/SKILL.md`
+- `/architect` -> Read the file `<PROJECT_ROOT>/architect/SKILL.md`
+- `/proceed` -> Read the file `<PROJECT_ROOT>/proceed/SKILL.md`
+- `/review` -> Read the file `<PROJECT_ROOT>/review/SKILL.md`
+- `/bugfix` -> Read the file `<PROJECT_ROOT>/bugfix/SKILL.md`
+- `/deploy` -> Read the file `<PROJECT_ROOT>/deploy/SKILL.md`
+- `/deploy-analyze` -> Read the file `<PROJECT_ROOT>/deploy-analyze/SKILL.md`
+- `/deploy-env` -> Read the file `<PROJECT_ROOT>/deploy-env/SKILL.md`
+- `/deploy-provision` -> Read the file `<PROJECT_ROOT>/deploy-provision/SKILL.md`
+- `/deploy-trigger` -> Read the file `<PROJECT_ROOT>/deploy-trigger/SKILL.md`
+- `/deploy-heal` -> Read the file `<PROJECT_ROOT>/deploy-heal/SKILL.md`
 ```
 
 With this configuration active, Antigravity will automatically internalize the appropriate background skill file whenever you type short commands like `/spec` or `/proceed`, adhering perfectly to the ADLC pipeline workflow.
