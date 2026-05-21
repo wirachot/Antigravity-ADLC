@@ -23,14 +23,19 @@ Target/Arguments: $ARGUMENTS
 
 ## Autonomous Orchestration Pipeline
 
-Execute the following phases in sequence. Each phase delegates work to its corresponding sub-skill. Maintain a local deployment state to track progress.
+Execute the following phases in sequence. Each phase delegates work to its corresponding sub-skill. 
+Maintain a local deployment state in `.adlc/logs/deploy-status.json` to track and record the progress, timestamps, and status of each phase.
 
 ---
 
 ### Phase 0: Preflight & Resolve Target
 1. Resolve target provider details and credentials from `$ARGUMENTS` and `.adlc/config.yml`.
-2. Verify API tokens are present (e.g., `COOLIFY_API_KEY` for Coolify API, or SSH credentials for VPS).
-3. Log status: "Preflight verified. Initializing deployment pipeline."
+2. If multiple deployment targets/profiles are configured under `.adlc/config.yml`, or if running interactively, present the target options to the user along with an option to "Create a New Deployment Destination".
+   - If an existing target is chosen, load its parameters.
+   - If "Create a New Deployment Destination" is chosen, prompt the user for the new destination details, dynamically provision the new environment/database in Phase 3, and save/register the new profile under `.adlc/config.yml`.
+3. Verify API tokens are present (e.g., `COOLIFY_API_KEY` for Coolify API, or SSH credentials for VPS).
+4. Log status: "Preflight verified. Initializing deployment pipeline."
+5. Initialize `.adlc/logs/deploy-status.json` with Phase 0 status: `success`, and set the overall status to `in-progress`.
 
 ---
 
@@ -39,6 +44,7 @@ Execute the following phases in sequence. Each phase delegates work to its corre
 1. Capture output details (identified stack, listening ports, database dependencies).
 2. Verify that Dockerfile, docker-compose.yml, or nixpacks.toml configurations are generated/validated.
 3. Log status: "Codebase analysis completed. Scaffolded configurations verified."
+4. Update `.adlc/logs/deploy-status.json` with Phase 1 status: `success` and detected tech stack details.
 
 ---
 
@@ -48,6 +54,7 @@ Execute the following phases in sequence. Each phase delegates work to its corre
 2. Interactively gather required credentials/secrets from the user or configure secure defaults.
 3. Keep the resolved key-value configuration ready for provisioning.
 4. Log status: "Environment variables configuration ready."
+5. Update `.adlc/logs/deploy-status.json` with Phase 2 status: `success` and list of configured variables (redacting secret values).
 
 ---
 
@@ -57,6 +64,7 @@ Execute the following phases in sequence. Each phase delegates work to its corre
 2. Register the application, exposing the correct container port and mapping the public domain.
 3. Inject the complete environment variables into the application settings.
 4. Log status: "Resources provisioned. Target platform configured."
+5. Update `.adlc/logs/deploy-status.json` with Phase 3 status: `success` and target provisioning details.
 
 ---
 
@@ -66,8 +74,8 @@ Execute the following phases in sequence. Each phase delegates work to its corre
 2. Stream build logs in real-time.
 3. Monitor container startup logs to ensure port binding succeeds.
 4. Save the full build/startup output to `.adlc/logs/deploy-latest.log` (overwrites existing) and `.adlc/logs/deploy-[timestamp].log` (for history).
-5. If deployment succeeds (health check HTTP 200 OK), skip to Phase 6.
-6. If deployment fails (build crash, Nginx 502, timeout), ensure logs are fully captured in `.adlc/logs/deploy-latest.log` and proceed to Phase 5.
+5. If deployment succeeds (health check HTTP 200 OK), update `.adlc/logs/deploy-status.json` with Phase 4 status: `success` and skip to Phase 6.
+6. If deployment fails (build crash, Nginx 502, timeout), ensure logs are fully captured in `.adlc/logs/deploy-latest.log`, update `.adlc/logs/deploy-status.json` with Phase 4 status: `failed`, and proceed to Phase 5.
 
 ---
 
@@ -77,7 +85,8 @@ Execute the following phases in sequence. Each phase delegates work to its corre
 2. Auto-edit files in the codebase (code or config) to resolve the error.
 3. Commit the changes and push to the remote repository.
 4. **Redeploy Loop:** Return to Phase 4 to re-trigger build and monitor.
-5. **Iteration Limit:** Allow up to **3 healing iterations**. If the deployment still fails after 3 tries, halt and present the parsed logs and recommended fixes to the user.
+5. **Iteration Limit:** Allow up to **3 healing iterations**. If the deployment still fails after 3 tries, update `.adlc/logs/deploy-status.json` with Phase 5 status: `failed` (overall status: `failed`), halt and present the parsed logs and recommended fixes to the user.
+6. If the redeploy loop succeeds, update `.adlc/logs/deploy-status.json` with Phase 5 status: `success` and applied fixes details.
 
 ---
 
@@ -90,6 +99,7 @@ Execute the following phases in sequence. Each phase delegates work to its corre
    - **Database Services:** Connected
    - **Auto-healed Issues:** Details of any fixes applied in Phase 5.
 3. Log status: "Deployment successful. Handover complete."
+4. Update `.adlc/logs/deploy-status.json` with Phase 6 status: `success`, and set the overall status to `success`.
 
 ## Error Handling
 
