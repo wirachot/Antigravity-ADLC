@@ -1,0 +1,13 @@
+When the user inputs a short command, always execute the `view_file` tool in the background with `IsSkillFile: true` pointing to the corresponding Skill file before starting work:
+- `/init` -> Read the file `ADLC_TOOLKIT_PATH/init/SKILL.md`
+- `/spec` -> Read the file `ADLC_TOOLKIT_PATH/spec/SKILL.md`
+- `/architect` -> Read the file `ADLC_TOOLKIT_PATH/architect/SKILL.md`
+- `/proceed` -> Read the file `ADLC_TOOLKIT_PATH/proceed/SKILL.md`
+- `/review` -> Read the file `ADLC_TOOLKIT_PATH/review/SKILL.md`
+- `/bugfix` -> Read the file `ADLC_TOOLKIT_PATH/bugfix/SKILL.md`
+- `/deploy` -> Read the file `ADLC_TOOLKIT_PATH/deploy/SKILL.md`
+- `/deploy-analyze` -> Read the file `ADLC_TOOLKIT_PATH/deploy-analyze/SKILL.md`
+- `/deploy-env` -> Read the file `ADLC_TOOLKIT_PATH/deploy-env/SKILL.md`
+- `/deploy-provision` -> Read the file `ADLC_TOOLKIT_PATH/deploy-provision/SKILL.md`
+- `/deploy-trigger` -> Read the file `ADLC_TOOLKIT_PATH/deploy-trigger/SKILL.md`
+- `/deploy-heal` -> Read the file `ADLC_TOOLKIT_PATH/deploy-heal/SKILL.md`

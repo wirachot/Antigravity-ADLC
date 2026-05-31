@@ -222,7 +222,39 @@ The template pre-approves the routine `git`, `gh`, `npm`, Read/Write/Edit, and a
 
 Advise the user: "`.claude/settings.json` was scaffolded with a default allowlist. Commit this file — it is team-shared. Use `.claude/settings.local.json` (gitignored by Claude Code) for personal overrides."
 
-### Step 9: Scaffold Cross-Repo Config (Optional)
+### Step 9: Scaffold Gemini Project-Level Rules
+
+Copy the Gemini routing rules into the project so Antigravity can pick up ADLC slash commands **without requiring global `~/.gemini/GEMINI.md` setup** after this first `/init`.
+
+**This step is idempotent — skip if `.gemini/GEMINI.md` already exists** (preserve any project-local customizations).
+
+Determine the toolkit path — this is the directory where the ADLC toolkit lives (i.e., the directory containing this `init/SKILL.md` file). Use the absolute path on the user's machine.
+
+```bash
+# Determine toolkit path (absolute path to the adlc-toolkit repo root)
+TOOLKIT_PATH="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Verify template exists
+if [ ! -f "$TOOLKIT_PATH/templates/gemini-rules-template.md" ]; then
+  echo "WARNING: gemini-rules-template.md not found at $TOOLKIT_PATH/templates/. Skipping Gemini rules setup."
+else
+  # Ensure destination directory exists
+  mkdir -p .gemini
+
+  # Idempotent: only copy if destination does not already exist
+  if [ ! -f .gemini/GEMINI.md ]; then
+    sed "s|ADLC_TOOLKIT_PATH|$TOOLKIT_PATH|g" \
+      "$TOOLKIT_PATH/templates/gemini-rules-template.md" > .gemini/GEMINI.md
+    echo "Created .gemini/GEMINI.md with ADLC slash-command routing."
+  else
+    echo "Preserved existing .gemini/GEMINI.md (idempotent — not overwritten)."
+  fi
+fi
+```
+
+Advise the user: "`.gemini/GEMINI.md` now contains the ADLC slash-command routing rules. Antigravity will pick these up automatically when you open this project — no global `~/.gemini/GEMINI.md` setup required. **Add `.gemini/GEMINI.md` to your `.gitignore`** if you don't want to commit personal assistant rules to the repo, or commit it if the whole team uses Antigravity."
+
+### Step 10: Scaffold Cross-Repo Config (Optional)
 
 Ask the user: "Will this repo ever share features with other repos you also work on (e.g., an admin app + its API + an iOS app)? If yes, `/proceed` can coordinate REQs across them — this repo needs a `.adlc/config.yml` to list its siblings."
 
@@ -253,7 +285,7 @@ Advise the user:
 
 If the project is single-repo, skip the copy (no config file needed).
 
-### Step 10: Summary
+### Step 11: Summary
 1. Display the created directory structure
 2. Explain the ADLC workflow: `/spec` → `/validate` → `/architect` → `/validate` → implement → `/reflect` → `/review` → `/wrapup` (or use `/proceed` to run the full pipeline automatically)
 3. If cross-repo config was scaffolded, remind the user that `/proceed` will create worktrees in every touched sibling and open one PR per repo
