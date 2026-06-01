@@ -254,6 +254,31 @@ fi
 
 Advise the user: "`.gemini/GEMINI.md` now contains the ADLC slash-command routing rules. Antigravity will pick these up automatically when you open this project — no global `~/.gemini/GEMINI.md` setup required. **Add `.gemini/GEMINI.md` to your `.gitignore`** if you don't want to commit personal assistant rules to the repo, or commit it if the whole team uses Antigravity."
 
+### Step 9.5: Scaffold OpenCode/Codex Agent Rules
+
+Copy the OpenCode/Codex agent routing rules (`AGENTS.md`) into the project root so other AI coding assistants can pick up ADLC slash commands.
+
+**This step is idempotent — skip if `AGENTS.md` already exists** (preserve any project-local customizations).
+
+```bash
+# Verify template exists
+if [ ! -f "$TOOLKIT_PATH/templates/agents-rules-template.md" ]; then
+  echo "WARNING: agents-rules-template.md not found at $TOOLKIT_PATH/templates/. Skipping AGENTS.md setup."
+else
+  # Idempotent: only copy if destination does not already exist
+  if [ ! -f AGENTS.md ]; then
+    sed "s|ADLC_TOOLKIT_PATH|$TOOLKIT_PATH|g" \
+      "$TOOLKIT_PATH/templates/agents-rules-template.md" > AGENTS.md
+    echo "Created AGENTS.md with ADLC slash-command routing."
+  else
+    echo "Preserved existing AGENTS.md (idempotent — not overwritten)."
+  fi
+fi
+```
+
+Advise the user: "`AGENTS.md` now contains the ADLC slash-command routing rules for OpenCode and other assistants. Commit this file if you want other developers using those tools to have automatic routing to the ADLC pipeline."
+
+
 ### Step 10: Scaffold Cross-Repo Config (Optional)
 
 Ask the user: "Will this repo ever share features with other repos you also work on (e.g., an admin app + its API + an iOS app)? If yes, `/proceed` can coordinate REQs across them — this repo needs a `.adlc/config.yml` to list its siblings."
