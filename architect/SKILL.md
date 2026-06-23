@@ -45,6 +45,15 @@ Before proceeding, verify that `.adlc/context/architecture.md` and `.adlc/contex
    - **integration-explorer** agent — provide the affected areas to identify extension points, tests, and integration surfaces
 
 2. Read the key files identified by agents
+3. **Retain the `architecture-mapper` affected-file list** (the first column of its "Files to
+   Modify" + "Files to Create" tables, bare paths) as `$MAPPER_PATHS` — one path per line. This
+   is NOT the footprint source anymore (tasks are, per REQ-484); it is kept only as the BR-4
+   graceful-degradation fallback consumed by Step 5 when a task carries no file list.
+
+> **Note (REQ-484):** footprint publishing has moved to **Step 5**, which runs AFTER task
+> creation. Per-repo attribution is derived from the task files' `repo:` frontmatter, so the
+> publish step MUST run once those files exist — not here during codebase exploration. The
+> mapper output is retained (item 3) only as the BR-4 fallback.
 
 ### Step 3: Design Architecture (if needed)
 1. If the requirement involves new architectural decisions, create `.adlc/specs/REQ-xxx-*/architecture.md`
@@ -73,11 +82,148 @@ Before proceeding, verify that `.adlc/context/architecture.md` and `.adlc/contex
 6. Tasks must form a valid dependency graph (no cycles), even when spanning repos
 7. Order tasks so foundational work comes first (data layer → service → routes → UI). In cross-repo mode, backend/API tasks typically precede their frontend consumers.
 
-### Step 5: Update Requirement Status
+### Step 5: Publish the File Footprint to the Draft PR(s) (REQ-483 BR-4 / REQ-484)
+
+**Runs AFTER task creation** so per-repo `repo:` attribution from the task files is available
+(REQ-484 ADR-2 / OQ-1). Under `/proceed`, a draft PR already exists per touched repo (Step 0),
+each recorded in `pipeline-state.json` `repos[<id>].prNumber`. Publish **each repo's own**
+footprint into **that repo's** draft PR — one fenced `adlc-footprint` block per PR, each line
+repo-qualified `<repo-id>:<path-or-glob>` (the schema `/manifest` parses; see
+`.adlc/specs/REQ-483-*/architecture.md` and `.adlc/specs/REQ-484-*/architecture.md`). Idempotent
+(replace any prior block). Skip with a one-line note if there is no draft PR (standalone
+`/architect`, no `/proceed`).
+
+**Attribution (BR-1, BR-6, ADR-1).** A repo's footprint is the union of
+`## Files to Create/Modify` paths across tasks whose `repo:` frontmatter equals that repo id. A
+task with **no** `repo:` field attributes to the **primary** repo (single-repo projects omit
+`repo:`), so single-repo REQs derive from tasks via this same path — NOT via the BR-4
+mapper-fallback. A path is attributed to a repo solely by its task's `repo:` tag — never
+broadcast to all PRs, never inferred from the path string.
+
+**Iterate every PR (BR-2, BR-3).** Loop over every touched repo's `prNumber` from
+`pipeline-state.json` — do NOT use `head -1`. Each PR receives only its own repo's lines. In
+single-repo mode the loop degenerates to one repo / one PR / one block, with no separate code
+path and no "coarse" flag.
+
+**Sanitize on write (BR-5, LESSON-008).** Every emitted line MUST pass the same validation the
+read side applies — reject any line containing `..`, then charset-validate
+`^[A-Za-z0-9_.-]*:?[A-Za-z0-9_./*-]+$` — BEFORE it is written to any PR body.
+
+**Graceful degradation, never error (BR-4).** A task with no file list, or a touched repo with
+no tasks attributing files, falls back to the architecture-mapper paths attributed to the
+**primary** repo, emitting a one-line `source: mapper-fallback` notice. A repo with genuinely
+zero attributable files is skipped with a note — never publish an empty block silently.
+
+```sh
+# Forge adapter (REQ-520 BR-1): footprint publish reads/writes the PR body via
+# pr_view/pr_edit, never direct gh. Sourced in THIS fence (shell state does not
+# cross fences). GitHub backend forwards args verbatim, so the body read/write is
+# byte-identical (BR-3).
+. .adlc/partials/forge.sh 2>/dev/null || . ~/.claude/skills/partials/forge.sh
+
+# Scope to THIS REQ's spec dir. $REQ is the REQ id (e.g. REQ-484) the skill is operating on;
+# fall back to the lone pipeline-state.json if $REQ is unset (resolve to its spec dir either way).
+# find, not ls globs: zsh errors on unmatched globs ("no matches found") instead of
+# passing the pattern through, so a glob here breaks sh/bash/zsh parity.
+state=""
+if [ -n "$REQ" ]; then
+  state=$(find .adlc/specs -type f -path "*/${REQ}-*/pipeline-state.json" 2>/dev/null | sort | head -1)
+fi
+[ -n "$state" ] || state=$(find .adlc/specs -type f -path "*/REQ-*/pipeline-state.json" 2>/dev/null | sort | head -1)
+[ -n "$state" ] || { echo "architect: no pipeline-state.json — standalone run, skipping footprint publish"; exit 0; }
+specdir=$(dirname "$state")   # THIS REQ's spec dir — task glob is scoped here, not all specs.
+tick=$(printf '\140\140\140')
+tab=$(printf '\t')
+# Primary repo id (tasks with no repo: attribute here). The parse targets the pretty-printed
+# pipeline-state.json that /proceed writes (one JSON field per line; each repo object spans
+# multiple lines). It also tolerates one-repo-object-per-line layouts. A repo-id opening
+# (`"<id>": {`) sets the current repo; "primary"/"prNumber" bind to it (matched on the same line
+# too, so a repo whose object opens and closes on its own line still resolves). POSIX awk only —
+# no 3-arg match(), no perl dependency.
+primary=$(awk '
+  /"repos"[[:space:]]*:/ { inrepos=1 }
+  inrepos && /"[A-Za-z0-9_.-]+"[[:space:]]*:[[:space:]]*\{/ {
+    # take the key immediately before `: {` (the LAST quoted token before the brace), so a
+    # compact line like `{ "req":"R", "repos": { "solo": {` still yields `solo`, not `req`.
+    s=$(0); sub(/[[:space:]]*:[[:space:]]*\{.*/,"",s); sub(/"$/,"",s); sub(/.*"/,"",s)
+    if (s!="repos" && s!="") cur=s
+  }
+  inrepos && cur!="" && /"primary"[[:space:]]*:[[:space:]]*true/ { print cur; exit }
+' "$state" 2>/dev/null)
+# Touched repo ids that have a prNumber, one TSV line per repo: "<repo-id><TAB><prNumber>".
+# Each prNumber stays bound to its owning repo id (NOT head -1). Same dual-format awk.
+repos_prs=$(awk -v TAB="$tab" '
+  /"repos"[[:space:]]*:/ { inrepos=1 }
+  inrepos && /"[A-Za-z0-9_.-]+"[[:space:]]*:[[:space:]]*\{/ {
+    # take the key immediately before `: {` (the LAST quoted token before the brace), so a
+    # compact line like `{ "req":"R", "repos": { "solo": {` still yields `solo`, not `req`.
+    s=$(0); sub(/[[:space:]]*:[[:space:]]*\{.*/,"",s); sub(/"$/,"",s); sub(/.*"/,"",s)
+    if (s!="repos" && s!="") cur=s
+  }
+  inrepos && cur!="" && /"prNumber"[[:space:]]*:[[:space:]]*[0-9]+/ {
+    n=$(0); sub(/.*"prNumber"[[:space:]]*:[[:space:]]*/,"",n); sub(/[^0-9].*/,"",n);
+    if (n!="") { print cur TAB n; cur="" }
+  }
+' "$state" 2>/dev/null)
+[ -n "$repos_prs" ] || { echo "architect: no draft PR (no prNumber in state) — skipping footprint publish"; exit 0; }
+
+printf '%s\n' "$repos_prs" | while IFS="$tab" read -r repo prnum; do
+  [ -n "$repo" ] && [ -n "$prnum" ] || continue
+  # Collect this repo's task-attributed file paths (first backtick token of each bullet under
+  # "## Files to Create/Modify"); a task with no repo: attributes to $primary.
+  lines=""
+  # while-read over find, not a for-glob: zsh errors on unmatched globs ("no matches
+  # found") instead of passing the pattern through. Heredoc (not a pipe) so $lines
+  # accumulated in the loop survives it.
+  while IFS= read -r tf; do
+    [ -f "$tf" ] || continue
+    trepo=$(sed -nE 's/^repo:[[:space:]]*([A-Za-z0-9_.-]+).*/\1/p' "$tf" | head -1)
+    [ -n "$trepo" ] || trepo="$primary"
+    [ "$trepo" = "$repo" ] || continue
+    paths=$(awk '/^## Files to Create\/Modify/{f=1;next} /^## /{f=0} f && /^- /{print}' "$tf" \
+      | sed -nE 's/^- *`([^`]+)`.*/\1/p')
+    [ -n "$paths" ] && lines=$(printf '%s\n%s\n' "$lines" "$paths")
+  done <<TASKS_EOF
+$(find "$specdir"/tasks -name 'TASK-*.md' 2>/dev/null | sort)
+TASKS_EOF
+  # Repo-qualify, sanitize (reject .. then charset-validate), dedupe.
+  safe=$(printf '%s\n' "$lines" | sed '/^$/d' \
+    | while IFS= read -r p; do printf '%s:%s\n' "$repo" "$p"; done \
+    | grep -vE '\.\.' | grep -E '^[A-Za-z0-9_.-]*:?[A-Za-z0-9_./*-]+$' | sort -u)
+  if [ -z "$safe" ]; then
+    # BR-4 fallback: architecture-mapper paths attributed to primary (only for the primary PR).
+    if [ "$repo" = "$primary" ] && [ -n "$MAPPER_PATHS" ]; then
+      safe=$(printf '%s\n' "$MAPPER_PATHS" | sed '/^$/d' \
+        | while IFS= read -r p; do printf '%s:%s\n' "$primary" "$p"; done \
+        | grep -vE '\.\.' | grep -E '^[A-Za-z0-9_.-]*:?[A-Za-z0-9_./*-]+$' | sort -u)
+      [ -n "$safe" ] && echo "architect: repo=$repo source: mapper-fallback (no task file list)"
+    fi
+  fi
+  if [ -z "$safe" ]; then
+    echo "architect: repo=$repo has zero attributable files — skipping (no empty block)"
+    continue
+  fi
+  tmp=$(mktemp "${TMPDIR:-/tmp}/footprint.XXXXXX") || continue
+  if base=$(adlc_forge_pr_view "$prnum" --json body -q .body 2>/dev/null); then
+    base=$(printf '%s\n' "$base" | sed "/^${tick}adlc-footprint/,/^${tick}/d")
+    { printf '%s\n\n%sadlc-footprint\n' "$base" "$tick"; printf '%s\n' "$safe"; printf '%s\n' "$tick"; } > "$tmp"
+    adlc_forge_pr_edit "$prnum" --body-file "$tmp" >/dev/null 2>&1 && echo "architect: published footprint for repo=$repo to PR #$prnum"
+  fi
+  rm -f "$tmp"
+done
+```
+
+`$MAPPER_PATHS` holds the architecture-mapper affected-file list (bare paths, no repo column)
+captured during Step 2 — used only for the BR-4 primary-repo fallback when a task carries no file
+list. Other sessions read each block via `adlc_forge_pr_view --json body` (consumed by `/manifest`'s
+ordering verdict). The block is split-free (newline iteration, no unquoted word-splitting) so it
+behaves identically under `sh` and `zsh` (LESSON-329), and uses `mktemp` + cleanup per PR.
+
+### Step 6: Update Requirement Status
 1. Update the requirement's frontmatter status from `draft` to `approved`
 2. Update the `updated` date
 
-### Step 6: Present for Review
+### Step 7: Present for Review
 1. Display the architecture decisions (if any)
 2. Display the task breakdown as a dependency graph
 3. Summarize the implementation plan

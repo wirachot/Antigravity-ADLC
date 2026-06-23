@@ -22,7 +22,16 @@ merge sequencing, and terminal-state contract live here.
 1. For each touched repo:
    - Inside that repo's worktree, ensure all changes are committed and push the feature branch: `git -C <worktree> push -u origin feat/REQ-xxx-short-description`
 2. Set the requirement status to `complete` in its frontmatter (primary repo only).
-3. Create a PR **in each touched repo** using `gh pr create` (invoke via `gh -R <owner/repo>` or by running `gh` from inside each worktree). In cross-repo mode, create the PR for the primary repo **last** so the primary PR body can link to all sibling PRs.
+3. **Flip each touched repo's draft PR (opened at Step 0, step 8a) to ready** with `adlc_forge_pr_ready <prNumber>` (read `prNumber`/`prUrl` from `pipeline-state.json`) — do **NOT** create a new PR (REQ-483 BR-2). **Fallback (LESSON-004):** if `prNumber` is absent (a pipeline started before draft-PR-early), `adlc_forge_pr_create --base <integrationBranch>` instead (never default base to `main`). Then set the full body **preserving the `adlc-footprint` block** `/architect` published — read the current body, extract the fenced footprint block, and re-append it to the new body, and drop the Step-0 `[WIP]` title prefix:
+   ```sh
+   . .adlc/partials/forge.sh 2>/dev/null || . ~/.claude/skills/partials/forge.sh
+   tick=$(printf '\140\140\140')
+   tmp=$(mktemp "${TMPDIR:-/tmp}/prbody.XXXXXX"); trap 'rm -f "$tmp"' EXIT
+   fp=$(adlc_forge_pr_view "$prNumber" --json body -q .body 2>/dev/null | sed -n "/^${tick}adlc-footprint/,/^${tick}/{ /^${tick}/d; p; }")
+   { printf '%s\n' "$NEW_BODY"; [ -n "$fp" ] && printf '\n%sadlc-footprint\n%s\n%s\n' "$tick" "$fp" "$tick"; } > "$tmp"
+   adlc_forge_pr_edit "$prNumber" --body-file "$tmp" --title "$FINAL_TITLE"
+   ```
+   `$NEW_BODY` is the template below; `$FINAL_TITLE` drops the `[WIP]` prefix. In cross-repo mode, ready the primary repo's PR **last** so its body can link to all sibling PRs.
    - **Title (per repo)**: Short description referencing the REQ, tagged with the repo id when cross-repo (e.g., `feat(api): new endpoint [REQ-023]`).
    - **Body (per repo)**:
      ```
@@ -56,8 +65,8 @@ merge sequencing, and terminal-state contract live here.
      [Only when cross-repo. List the mergeOrder from pipeline-state.json so
       reviewers know which PR merges first.]
      ```
-4. After each PR is created, write its URL to `repos[<id>].prUrl` in `pipeline-state.json`.
-5. After the last PR is created, go back and edit sibling PRs' bodies (`gh pr edit`) to add the cross-repo "Related PRs" section now that every URL is known.
+4. The PR URL was recorded at Step 0 (step 8a); confirm `repos[<id>].prUrl` is set (record it now only if absent — old-format state).
+5. After the last PR is **readied**, go back and edit sibling PRs' bodies (`adlc_forge_pr_edit`) to add the cross-repo "Related PRs" section now that every URL is known (preserve each PR's `adlc-footprint` block as in step 3).
 6. Report all PR URLs to the user, grouped by repo and in `mergeOrder` sequence.
 
 ---
@@ -96,22 +105,28 @@ Do all the steps below **for every touched repo's PR**:
 
 | Tag | Required preconditions |
 |---|---|
-| `merged` | All touched-repo PRs are `MERGED` (verifiable via `gh pr view --json state,mergedAt`). `repos[<id>].merged == true` for every touched repo. |
+| `merged` | All touched-repo PRs are `MERGED` (verifiable via `adlc_forge_pr_view <prUrl> --fields state,mergedAt`, or `gh pr view --json state,mergedAt` on GitHub). `repos[<id>].merged == true` for every touched repo. |
 | `pr-ready` | All touched-repo PRs are `OPEN`, `MERGEABLE`, all required CI green. Used in cross-repo mode when the orchestrator owns merge sequencing, or in single-repo mode when the run is explicitly told not to merge. |
 | `blocked` | Blocker requires human input. `pipeline-state.json.blockers` populated. |
 | `failed` | Pipeline failed past automatic recovery. Failure details in `pipeline-state.json.notes`. |
 
 A vague "Pipeline complete" claim without one of these tags is a protocol violation. When dispatched by `/sprint`, the orchestrator will reject untagged claims and treat them as `blocked`.
 
+**Pre-merge trial-merge gate (REQ-483, BR-9/BR-16 — authoritative).** Before merging, first **`git -C <repos[<id>].worktree> fetch origin <integrationBranch>`** — the gate MUST test the *current* tip; a stale local ref gives a false pass (LESSON-036). Then source `partials/trial-merge.sh` and run `adlc_trial_merge "<repos[<id>].worktree>" origin/<integrationBranch>`, branching on the return code: **rc=1** (real conflict, files on stdout) → do NOT merge: return the `blocked` terminal, populate `pipeline-state.json.blockers` with `{blockedBy, conflictFiles, unblockCondition}` ("resume after <blocker> merges, then rebase") — legitimate halt #3. **rc=0** → proceed to the merge below. **rc=2/3** (uncommitted worktree / unfetched-or-bad ref) → surface as `failed`, NOT `blocked` (it is a setup error, not a conflict). A footprint overlap alone never blocks — only rc=1 does (resolution is rebase, never a "merge anyway" — ethos #6).
+
+**`blockers` entry shape (REQ-485 additions).** The entry written on rc=1 carries, beyond `{blockedBy, conflictFiles, unblockCondition}`, three fields the `/sprint` orchestrator's auto-rebase/resume pass reads and updates: `holdState` (`held` \| `rebasing` \| `resumed` \| `re-halted` \| `needs-manual-rebase`), `rebaseAttempts` (capped at the retry bound — default 1, config `auto_rebase_max_attempts`), and `resolvedBlocker` (the now-merged blocker id after a post-merge materialized conflict). On a rc=1 halt set `holdState: "held"` and `rebaseAttempts: 0`. See `agents/pipeline-runner.md` "Blocker Handling" for the full table.
+
+**Clear-on-resolve (REQ-485 BR-11).** When this merge is the resume of a previously-held REQ (the orchestrator auto-rebased it cleanly after its blocker merged), the same write that sets `repos[<id>].merged = true` MUST also **clear this REQ's `blockers` entry** (transition `holdState` to `resumed`, then remove the entry). Setting `merged = true` and clearing `blockers` are distinct writes; historically only the former was done. The clear is the idempotency anchor for the unblock pass (it considers ONLY REQs whose `blockers` entry is still present), so a later blocker-merged event does not re-process an already-merged REQ.
+
 **Topology-driven merge actor**:
-- **Single-repo REQ** (one touched repo): the pipeline owns the merge in this phase. Run `gh pr merge <prUrl> --squash --delete-branch` from the parent repo path (`repos[<id>].path`), NOT from the worktree. Terminal claim is `merged`.
+- **Single-repo REQ** (one touched repo): the pipeline owns the merge in this phase. Run `adlc_forge_pr_merge <prUrl> --squash --delete-branch` (sourcing `partials/forge.sh` in the same fence) from the parent repo path (`repos[<id>].path`), NOT from the worktree. Terminal claim is `merged`.
 - **Cross-repo REQ** (multiple touched repos): use the cross-repo merge sequencing block below. Terminal claim is `merged` after all repos land, or `pr-ready` if dispatched by an orchestrator that owns merge sequencing.
 
 **Cross-repo merge sequencing**:
 
 1. Walk `mergeOrder` from `pipeline-state.json`. For each repo id in order:
    - Skip if `repos[<id>].merged == true` (already merged — recovering from an interrupted run).
-   - Merge that repo's PR (`gh pr merge <prUrl> --squash` or the project's configured merge strategy).
+   - Merge that repo's PR (`adlc_forge_pr_merge <prUrl> --squash` or the project's configured merge strategy).
    - Wait for the merge to land, then set `repos[<id>].merged = true` in state.
    - If the next repo's PR was opened against `main` and depends on the just-merged changes being present, trigger a rebase/retarget before merging it. When siblings were developed in parallel worktrees against the same pre-REQ main, this is usually a no-op — but surface any auto-merge failure to the user as a conflict halt (legitimate halt #3).
 2. After all PRs are merged, run `/wrapup` with the REQ ID from the primary repo. In cross-repo mode, pass the list of touched repos so `/wrapup` can:

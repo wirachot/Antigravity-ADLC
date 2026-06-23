@@ -8,7 +8,7 @@ Every skill and agent is a markdown file. No TypeScript, no Python, no package.j
 - **No test runner**: "tests" are dogfooding — invoke the skill on a real REQ and see if it produces the expected artifacts
 - **Linting is minimal**: markdown formatting, frontmatter validity, and bash syntax in `!`...`` macros. Nothing else.
 
-**Exception — `tools/`:** the `tools/` directory may contain real executable code (e.g. `tools/kimi/`, a set of Python delegation CLIs with its own `install.sh`). It is exempt from the markdown-only rule and from the symlink-install model — those tools are installed by running their `install.sh`, not via the skills symlink. Each `tools/<name>/` subdirectory carries its own README.
+**Exception — `tools/`:** the `tools/` directory may contain real executable code (e.g. `tools/delegate/`, a set of Python delegation CLIs with its own `install.sh`). It is exempt from the markdown-only rule and from the symlink-install model — those tools are installed by running their `install.sh`, not via the skills symlink. Each `tools/<name>/` subdirectory carries its own README.
 
 ## File and directory naming
 
@@ -37,21 +37,66 @@ Every skill begins with:
 
 The partial itself emits the canonical fallback chain (consumer-project ETHOS.md first, then toolkit-root, then graceful "No ethos found" message). The two-level fallback at the call site (project `partials/` first, then global `~/.claude/skills/partials/`) ensures the macro still works in consumer projects that haven't re-run `/init` after the toolkit shipped the partial. Never hardcode the ethos body inside a skill — always source the partial.
 
-## Kimi delegation pattern
+## Delegation pattern (provider-agnostic)
 
-Skills that delegate bulk reads or drafting to `ask-kimi` MUST source the shared gate predicate rather than inlining `command -v ask-kimi >/dev/null 2>&1 && [ "${ADLC_DISABLE_KIMI:-0}" != "1" ]`:
+Skills that delegate bulk reads or drafting to the configured delegate (`adlc-read` /
+`adlc-write`) MUST source the shared gate predicate rather than inlining
+`command -v adlc-read >/dev/null 2>&1 && …`. The canonical predicate lives in
+`partials/delegate-gate.sh` and defines `adlc_delegate_gate_check()` with a 0/1/2 contract
+(REQ-522 retired the legacy `kimi-gate.sh` back-compat alias):
 
 ```sh
-. .adlc/partials/kimi-gate.sh 2>/dev/null || . ~/.claude/skills/partials/kimi-gate.sh
-adlc_kimi_gate_check; gate=$?
+. .adlc/partials/delegate-gate.sh 2>/dev/null || . ~/.claude/skills/partials/delegate-gate.sh
+adlc_delegate_gate_check; gate=$?
 case $gate in
   0) ;;  # delegated
-  1) ;;  # disabled via ADLC_DISABLE_KIMI=1
-  2) ;;  # unavailable (ask-kimi not on PATH)
+  1) ;;  # disabled (ADLC_DISABLE_DELEGATE=1, or not opted-in — BR-11)
+  2) ;;  # unavailable (adlc-read not on PATH)
 esac
 ```
 
-See `partials/kimi-gate.md` for the full protocol — return-code contract, the canonical stderr emit templates parameterized by `<skill>` and `<purpose>`, and the BR-4 one-line-per-invocation rule. Per-skill stderr messages and fallback bodies stay inline at the call site; only the predicate is shared.
+The reason is exported as `ADLC_DELEGATE_GATE_REASON`. Delegation is **opt-in** (off by
+default on fresh installs) — enabled by `delegate.enabled: true` in
+`~/.claude/adlc/config.yml`, `ADLC_DELEGATE_ENABLED=1`, or an already-set legacy
+`KIMI_API_KEY`/`MOONSHOT_API_KEY` (key continuity, data — REQ-515 BR-11).
+
+Per-step telemetry state crosses the create → gate → invoke → resolve fenced blocks via
+the **flag-file sidecar** (`partials/delegate-tools-path.sh`'s `skill-flag.sh mark`/`read`),
+never via shell variables, because fenced blocks do not share shell state (REQ-522 BR-4).
+The shared resolver `_adlc_emit_step_telemetry <skill> <step>` in
+`partials/emit-step-telemetry.sh` reads those marks back and emits one telemetry record.
+
+See `partials/delegate-gate.md` for the full protocol — return-code contract, the
+canonical stderr emit templates parameterized by `<skill>` and `<purpose>`, and the BR-4
+one-line-per-invocation rule. Per-skill stderr messages and fallback bodies stay inline at
+the call site; only the predicate is shared.
+
+## Forge adapter (provider-agnostic PR operations)
+
+Skills that touch the pull-request lifecycle MUST route every PR operation through
+the forge adapter (`partials/forge.sh`), never by shelling out to `gh pr` directly.
+This makes a project portable between GitHub and Azure DevOps as a config change.
+Source the sourceable partial and call the op **in the same fenced block** (the
+cross-fence rule above):
+
+```sh
+. .adlc/partials/forge.sh 2>/dev/null || . ~/.claude/skills/partials/forge.sh
+out=$(adlc_forge_pr_view "$pr" --fields state,url); rc=$?
+```
+
+The op set is `adlc_forge_pr_{create,ready,edit,view,list,merge,comment}`. The
+GitHub backend (`gh`) is byte-compatible with the previous direct calls; the Azure
+DevOps backend uses `az repos`. Provider resolution is per-project `.adlc/config.yml`
+`forge.provider` > machine config > `auto` (origin-URL detection; unrecognized host
+fails loud). Results/errors are normalized to one vocabulary (`state ∈
+{OPEN,MERGED,CLOSED}`; error classes `auth-missing` | `pr-not-found` |
+`merge-blocked-by-policy` | `feature-unsupported` | `network`, with raw backend stderr
+preserved beneath the class). `forge.auth` stores a credential **source name** only
+(`gh`/`az`/an env-var NAME holding a PAT) — never a key value (a key-shaped value is
+refused). Two ops stay direct on purpose: `gh pr diff` (local read-only convenience)
+and `gh pr checks` (CI-status polling, out of scope). The `tools/lint-skills`
+`forge-direct-gh` check rejects any new direct `gh pr <op>` in a SKILL.md shell fence.
+Full contract: `partials/forge.md`.
 
 ## Context loading pattern
 
@@ -77,7 +122,7 @@ Every skill that depends on the `.adlc/` scaffold must have a `## Prerequisites`
 - Quote file paths with spaces: `"$path"`
 - Avoid `cd` — prefer absolute paths so commands work from any working directory
 
-**Fenced blocks do not share shell state across steps.** Each ```sh fenced block in a SKILL.md may be an independent shell invocation — shell functions and non-exported variables defined in one fenced block are NOT visible in another (the Claude Code Bash-tool contract: "the working directory persists between commands, but shell state does not"). Therefore a shared shell **function** MUST be sourced from a `partials/*.sh` at *each* call site, in the **same fenced block as the invocation**, and MUST NEVER be defined in one fenced block and invoked from another (the silent-`command not found` telemetry-loss class — REQ-436, REQ-424). The canonical pattern is `partials/kimi-gate.sh` and `partials/emit-step-telemetry.sh`: a function-exporting partial sourced with the two-level fallback immediately before it is called. This is enforced structurally, not by prose/honor-system (LESSON-012): the `tools/lint-skills` `cross-fence-fn` check flags any function defined in one fence but invoked from a different fenced block in the same SKILL.md.
+**Fenced blocks do not share shell state across steps.** Each ```sh fenced block in a SKILL.md may be an independent shell invocation — shell functions and non-exported variables defined in one fenced block are NOT visible in another (the Claude Code Bash-tool contract: "the working directory persists between commands, but shell state does not"). Therefore a shared shell **function** MUST be sourced from a `partials/*.sh` at *each* call site, in the **same fenced block as the invocation**, and MUST NEVER be defined in one fenced block and invoked from another (the silent-`command not found` telemetry-loss class — REQ-436, REQ-424). The canonical pattern is `partials/delegate-gate.sh` and `partials/emit-step-telemetry.sh`: a function-exporting partial sourced with the two-level fallback immediately before it is called. This is enforced structurally, not by prose/honor-system (LESSON-012): the `tools/lint-skills` `cross-fence-fn` check flags any function defined in one fence but invoked from a different fenced block in the same SKILL.md.
 
 ## Agent dispatch patterns
 
@@ -99,7 +144,7 @@ Skills that span multiple phases (`/proceed`) write a `pipeline-state.json` next
 ## What NOT to do
 
 - **Don't create new skill directories casually**: each new skill is a commitment to maintain. Prefer extending an existing skill unless the new responsibility is genuinely orthogonal.
-- **Don't bypass ethos**: the five principles (especially #4 Verify, Don't Trust and #5 Process Is Not Optional) exist because shortcuts silently fail. If you're tempted to skip a validation gate or add a `--no-verify` flag, surface the tension to the user instead.
+- **Don't bypass ethos**: the ETHOS principles (especially #4 Verify, Don't Trust and #5 Process Is Not Optional) exist because shortcuts silently fail. If you're tempted to skip a validation gate or add a `--no-verify` flag, surface the tension to the user instead.
 - **Don't duplicate context loading logic**: if the same bash macro appears in three or more skills, extract it to `partials/<name>.sh` and source it from each call site (see the Ethos injection pattern above).
 - **Don't hardcode project-specific paths**: skills must work for any consumer project, not just atelier-fashion.
 - **Don't edit `templates/` without considering downstream**: consumer projects that ran `/init` got a copy of the templates. Template changes propagate via `/template-drift` detection, not auto-update.

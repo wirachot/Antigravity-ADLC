@@ -13,21 +13,22 @@ a general markdown linter and NOT a general shell linter.
    ` ```shell ` fenced block, the linter counts `$(` vs `)` and `$((` vs
    `))`. Imbalance is a finding. Outside-fence text is ignored (skill prose
    may legitimately use unbalanced examples).
-3. **Canonical-helper presence** — any SKILL.md that contains
-   `ADLC_DISABLE_KIMI` (i.e., has a Kimi delegation gate) must also contain
-   five exact literals (listed in the same order as `CANONICAL_LITERALS` in
-   `check.py`):
-   - `start_s=$(date -u +%s)`
-   - `duration_ms=$(( ($(date -u +%s) - $start_s) * 1000 ))`
-   - `"$KIMI_TOOLS"/emit-telemetry.sh ` (note the trailing space — it proves
-     an invocation, not a path substring)
-   - `. .adlc/partials/kimi-gate.sh 2>/dev/null || . ~/.claude/skills/partials/kimi-gate.sh`
-     (the gate-source line that wires the Kimi delegation gate; required so
-     corruption that strips it while leaving `ADLC_DISABLE_KIMI` references is
-     caught)
-   - `. .adlc/partials/kimi-tools-path.sh 2>/dev/null || . ~/.claude/skills/partials/kimi-tools-path.sh`
-     (the resolver-source line that sets `$KIMI_TOOLS`; required so corruption
-     that strips it while leaving the `"$KIMI_TOOLS"/…` invocation is caught)
+3. **Canonical-helper presence** — any SKILL.md that contains the delegation-gate
+   disable anchor `ADLC_DISABLE_DELEGATE` (REQ-522 de-branded the surface; the
+   legacy `ADLC_DISABLE_KIMI` anchor is retired) must also contain five canonical
+   literals, listed in the same order as `CANONICAL_LITERALS` in `check.py`:
+   - `skill-flag.sh mark "$flag" start_s ` (the start-time capture marked to the
+     flag-file sidecar — REQ-522 ADR-3)
+   - `_adlc_emit_step_telemetry ` (the shared resolver call in the SKILL.md
+     resolution fence)
+   - `"$DELEGATE_TOOLS"/emit-telemetry.sh ` (the emit exec; note the trailing
+     space — it proves an invocation, not a path substring. Lives in the partial.)
+   - `. .adlc/partials/delegate-gate.sh …` (the gate-source line that wires the
+     delegation gate; required so corruption that strips it while leaving a
+     disable anchor is caught)
+   - `. .adlc/partials/delegate-tools-path.sh …` (the resolver-source line that
+     sets `$DELEGATE_TOOLS`; required so corruption that strips it while leaving
+     the invocation is caught)
 
    Each missing literal is a separate finding.
 
@@ -36,11 +37,11 @@ a general markdown linter and NOT a general shell linter.
    sourced telemetry partial resolved under the scan root — checked in this
    order: `<root>/partials/*.sh`, then `<root>/.adlc/partials/*.sh`
    (toolkit-self / dogfooding layout vs. consumer-project layout). REQ-436
-   relocated the `_adlc_emit_step_telemetry` helper body — and with it the
-   `duration_ms=…` and `"$KIMI_TOOLS"/emit-telemetry.sh ` literals — out of
-   `analyze/SKILL.md` into `partials/emit-step-telemetry.sh`. Without this
-   rule the linter would falsely flag `analyze/SKILL.md` as missing those two
-   literals: a literal-presence guard rots when the thing it guards moves
+   relocated the `_adlc_emit_step_telemetry` helper body — and REQ-522 moved
+   the `"$DELEGATE_TOOLS"/emit-telemetry.sh ` literal — into
+   `partials/emit-step-telemetry.sh`. Without this rule the linter would falsely
+   flag `analyze/SKILL.md` as missing that literal: a literal-presence guard
+   rots when the thing it guards moves
    behind indirection (LESSON-019 #1), so the guard was generalized in the
    same change. The match is still plain text-substring (no shell parsing);
    the partials are read once per run, not per SKILL.md. A partial whose real
@@ -56,7 +57,17 @@ a general markdown linter and NOT a general shell linter.
    legitimately-`bash` blocks. The reported line is the absolute line of the
    offending body line (not the fence-open), so `/analyze` Step 1.9's
    `<file>:<line>:` parser stays accurate.
-5. **Cross-fence function (`cross-fence-fn`)** — a shell function *defined*
+5. **Argument templating (`arg-templating`)** — a bare `$<digit>` anywhere in
+   a SKILL.md (prose, inline code, or fence) is a finding. The Skill tool
+   substitutes `$ARGUMENTS` and `$0`–`$9` across the whole SKILL.md body
+   *before* any fenced script reaches a shell, so a bare positional — shell
+   `$1` or awk `$0`/`$5` — is silently replaced with (or emptied by) the
+   invocation's arguments (observed live: `/manifest`'s `index($0,k)` became
+   `index(MANIFEST_SELF=REQ-508,k)`). The templating-safe spellings are
+   `${1}` for shell positionals and `$(0)`/`$(1)` for awk fields — neither
+   contains a `$<digit>` substring, and both are valid shell/awk. `$$1`
+   (PID followed by a digit) is exempt. See LESSON-335.
+6. **Cross-fence function (`cross-fence-fn`)** — a shell function *defined*
    inside one fenced block but *invoked* only from a *different* fenced block
    in the same SKILL.md is a finding. SKILL.md fenced blocks do not share
    shell state across steps, so the function is undefined at that call site
@@ -68,6 +79,20 @@ a general markdown linter and NOT a general shell linter.
    prose mentions outside fences are ignored, and a define-and-use within the
    *same* fence is legitimate (never flagged). The finding is anchored at the
    definition line and names an invocation line.
+7. **Cross-fence variable (`cross-fence-var`)** — a non-exported variable
+   *assigned* in one fenced block but *read* in a *different* fenced block of
+   the same SKILL.md is a finding (REQ-522 BR-5). SKILL.md fenced blocks do not
+   share shell state across steps, so the read sees an empty value — the exact
+   inert-telemetry class REQ-522 fixed (the per-step telemetry state was set in
+   one fence and read in the resolution fence, so every run recorded
+   `mode=fallback`). The fix is to persist the value via the flag-file sidecar
+   (`skill-flag.sh mark`/`read`) or re-derive it in the consuming fence.
+   Conservative against false positives: a name is only considered if it is both
+   *assigned* (`NAME=`) and *read* (`$NAME`/`${NAME}`) within fences; an
+   `export`ed name is EXEMPT (it legitimately crosses via the environment); an
+   assign-and-read within the SAME fence is legitimate. The sanctioned carriers
+   `$flag` (the telemetry flag-path) and the id-allocation `*_NUM` counters
+   (allocate-then-recheck flow, REQ-518 domain) are exempt by name.
 
 ## Usage
 
@@ -96,10 +121,10 @@ linter picks up the new sentinel on its next run — no code changes needed.
 pytest tools/lint-skills/tests/ -q
 ```
 
-Or run together with the kimi suite:
+Or run together with the delegation suite:
 
 ```sh
-pytest tools/kimi/tests/ tools/lint-skills/tests/ -q
+pytest tools/delegate/tests/ tools/lint-skills/tests/ -q
 ```
 
 ## Constraints

@@ -59,9 +59,12 @@ If a `CLAUDE.md`, `README.md`, or `package.json` exists, extract this info autom
     task-template.md
   partials/              # Copies of ~/.claude/skills/partials/*.sh — shared shell snippets sourced by SKILL.md files
     ethos-include.sh
+  workflows/             # Copies of ~/.claude/skills/workflows/ RUNTIME files only — Dynamic Workflow scripts used by the workflow engine
+    adlc-sprint.workflow.js   # ONE self-contained file: meta first, schemas + pure helpers inlined behind // ==== BEGIN/END PURE ==== (runtime has no require)
+    README.md            # NOTE: workflows/tests/ is intentionally NOT copied — those are toolkit-internal node:test files (CommonJS require) that break Jest in "type":"module" consumer repos (see Step 6)
 ```
 
-**Why the local copies of ETHOS.md, templates, and partials?** Claude Code's sandbox blocks the `Read` tool from accessing paths outside the current working directory. When a skill runs inside a git worktree (e.g., `.claude/worktrees/<name>/`), `~/.claude/skills/ETHOS.md`, `~/.claude/skills/templates/*.md`, and `~/.claude/skills/partials/*.sh` become unreadable by subagents and any tool that uses `Read` mid-skill. Keeping copies under `.adlc/` makes the toolkit work identically in main checkouts and worktrees.
+**Why the local copies of ETHOS.md, templates, partials, and workflows?** Claude Code's sandbox blocks the `Read` tool from accessing paths outside the current working directory. When a skill runs inside a git worktree (e.g., `.claude/worktrees/<name>/`), `~/.claude/skills/ETHOS.md`, `~/.claude/skills/templates/*.md`, `~/.claude/skills/partials/*.sh`, and `~/.claude/skills/workflows/*` become unreadable by subagents and any tool that uses `Read` mid-skill. Keeping copies under `.adlc/` makes the toolkit work identically in main checkouts and worktrees.
 
 ### Step 4: Populate Context Files
 
@@ -125,10 +128,11 @@ Add the following entries to the project's `.gitignore` (create it if it doesn't
 # Claude Code per-user permission overrides (team settings live in .claude/settings.json)
 .claude/settings.local.json
 
-# ADLC counters are global (~/.claude/.global-next-req, ~/.claude/.global-next-bug) — not per-project
+# ADLC ID counters are global (~/.claude/.global-next-req, ~/.claude/.global-next-bug, ~/.claude/.global-next-lesson) — not per-project
 # Legacy per-project counters (deprecated, no longer read/written — ignored if present)
 .adlc/.next-bug
 .adlc/.next-req
+.adlc/.next-lesson
 ```
 
 ### Step 6: Copy ETHOS.md and Templates Into the Project
@@ -137,7 +141,7 @@ Copy the canonical ETHOS.md and all templates from the toolkit into the project 
 
 ```bash
 # Verify source exists
-if [ ! -f ~/.claude/skills/ETHOS.md ] || [ ! -d ~/.claude/skills/templates ] || [ ! -d ~/.claude/skills/partials ]; then
+if [ ! -f ~/.claude/skills/ETHOS.md ] || [ ! -d ~/.claude/skills/templates ] || [ ! -d ~/.claude/skills/partials ] || [ ! -d ~/.claude/skills/workflows ]; then
   echo "ERROR: Toolkit not found at ~/.claude/skills/. Ensure ~/.claude/skills is symlinked to the adlc-toolkit repo."
   exit 1
 fi
@@ -155,6 +159,31 @@ mkdir -p .adlc/partials
 cp ~/.claude/skills/partials/*.sh .adlc/partials/
 chmod +x .adlc/partials/*.sh
 
+# Copy workflows (overwrite — canonical is source of truth). These are the
+# Dynamic Workflow scripts the workflow engine runs (e.g.,
+# adlc-sprint.workflow.js — ONE self-contained file with schemas + pure helpers
+# inlined, since the runtime has no require). Resolved via the two-level fallback
+# (.adlc/workflows/... -> ~/.claude/skills/workflows/...) so the engine works
+# inside git worktrees where Read is sandboxed to the worktree root.
+#
+# Copy ONLY the runtime files: the workflow script(s) and the top-level README.
+# Do NOT copy workflows/tests/ — those are toolkit-internal `node:test` unit
+# tests for the inlined PURE helpers (CommonJS `require('node:test')`). They have
+# no purpose in a consumer repo, and shipping a `*.test.js` under .adlc/ is a
+# trap: in any "type":"module" repo running Jest, the DEFAULT testMatch
+# (**/?(*.)+(spec|test).[jt]s?(x)) discovers .adlc/workflows/tests/helpers.test.js,
+# runs it as ESM, and fails it with "ReferenceError: require is not defined" —
+# reddening `npm test` and any CI gate that runs it. The engine is ONE
+# self-contained file (no require/import/fs), so globbing *.workflow.js captures
+# everything the runtime ever resolves.
+mkdir -p .adlc/workflows
+cp ~/.claude/skills/workflows/*.workflow.js .adlc/workflows/
+cp ~/.claude/skills/workflows/README.md .adlc/workflows/
+# Idempotent cleanup: remove a stale tests/ dir left by an OLDER /init that did
+# `cp -R` of the whole workflows tree. Heals already-initialized repos on re-run;
+# safe no-op when absent. (Belt-and-suspenders to the explicit-file copy above.)
+rm -rf .adlc/workflows/tests
+
 # Clean up Finder-style duplicates if present. Matches:
 #   - .md files: "requirement-template 2.md"
 #   - non-.md files: "pipeline-state 2.json", ".next-bug 2"
@@ -162,9 +191,38 @@ chmod +x .adlc/partials/*.sh
 # The `-depth` flag processes directory contents before the directory itself,
 # so `rm -rf` on a "* 2" dir doesn't fail due to prior deletions.
 find .adlc -depth \( -name "* 2" -o -name "* 2.*" \) -exec rm -rf {} + 2>/dev/null
+
+# Advisory (Jest repos): the copy above ships NO test files under .adlc/, so the
+# default Jest testMatch stays green with no config change. Only a repo with a
+# custom BROAD testMatch (e.g. "**/*.js") would pick up .adlc/ — those repos
+# should add "<rootDir>/.adlc/" to testPathIgnorePatterns. Purely informational;
+# this does not edit package.json or any jest config.
+if grep -q '"jest"' package.json 2>/dev/null || find . -maxdepth 1 -name 'jest.config.*' 2>/dev/null | grep -q .; then
+  echo "ADVISORY (Jest detected): .adlc/ contains no test files by design — default 'npm test' is unaffected. If you use a custom broad testMatch, add \"<rootDir>/.adlc/\" to testPathIgnorePatterns."
+fi
 ```
 
-If the user has previously made intentional customizations to their local `.adlc/ETHOS.md`, `.adlc/templates/*.md`, or `.adlc/partials/*.sh`, confirm before overwriting. Use `/template-drift` to surface what differs. Typical drift (stale copies) should be overwritten silently.
+If the user has previously made intentional customizations to their local `.adlc/ETHOS.md`, `.adlc/templates/*.md`, `.adlc/partials/*.sh`, or `.adlc/workflows/adlc-sprint.workflow.js`, confirm before overwriting. Use `/template-drift` to surface what differs (it also flags a stale `.adlc/workflows/tests/` left by an older `/init` — the Jest landmine fixed above). Typical drift (stale copies) should be overwritten silently.
+
+#### Vendored sync surfaces (drift-detection contract with `/template-drift`)
+
+The four surfaces this step copies are the project's **vendored sync surfaces** — copied once at
+init time, never auto-updated afterward. `/template-drift` is the tool that detects when a toolkit
+update to any of them has not yet landed in this project. The two lists MUST stay in agreement:
+**every surface added here must get a matching check in `/template-drift`** (see its
+`<!-- sync-surfaces: template-drift -->` list). The toolkit's `tools/lint-skills`
+`sync-surface-parity` check fails the build if they diverge.
+
+<!-- sync-surfaces: init -->
+- `ethos` — `cp ~/.claude/skills/ETHOS.md .adlc/ETHOS.md`
+- `templates` — `cp ~/.claude/skills/templates/*.md .adlc/templates/`
+- `partials` — `cp ~/.claude/skills/partials/*.sh .adlc/partials/`
+- `workflow-runtime` — `cp ~/.claude/skills/workflows/*.workflow.js` + `README.md` → `.adlc/workflows/`
+<!-- /sync-surfaces -->
+
+(Note: `/template-drift` checks one additional surface — `workflow-test-landmine`, a stale
+`*.test.js` an *older* `/init` left under `.adlc/`. That is a drift *symptom* this step deliberately
+does NOT copy, so it has no entry here; the parity check accounts for that asymmetry.)
 
 ### Step 7: Scaffold Retrieval Taxonomy
 
@@ -222,64 +280,7 @@ The template pre-approves the routine `git`, `gh`, `npm`, Read/Write/Edit, and a
 
 Advise the user: "`.claude/settings.json` was scaffolded with a default allowlist. Commit this file — it is team-shared. Use `.claude/settings.local.json` (gitignored by Claude Code) for personal overrides."
 
-### Step 9: Scaffold Gemini Project-Level Rules
-
-Copy the Gemini routing rules into the project so Antigravity can pick up ADLC slash commands **without requiring global `~/.gemini/GEMINI.md` setup** after this first `/init`.
-
-**This step is idempotent — skip if `.gemini/GEMINI.md` already exists** (preserve any project-local customizations).
-
-Determine the toolkit path — this is the directory where the ADLC toolkit lives (i.e., the directory containing this `init/SKILL.md` file). Use the absolute path on the user's machine.
-
-```bash
-# Determine toolkit path (absolute path to the adlc-toolkit repo root)
-TOOLKIT_PATH="$(cd "$(dirname "$0")/.." && pwd)"
-
-# Verify template exists
-if [ ! -f "$TOOLKIT_PATH/templates/gemini-rules-template.md" ]; then
-  echo "WARNING: gemini-rules-template.md not found at $TOOLKIT_PATH/templates/. Skipping Gemini rules setup."
-else
-  # Ensure destination directory exists
-  mkdir -p .gemini
-
-  # Idempotent: only copy if destination does not already exist
-  if [ ! -f .gemini/GEMINI.md ]; then
-    sed "s|ADLC_TOOLKIT_PATH|$TOOLKIT_PATH|g" \
-      "$TOOLKIT_PATH/templates/gemini-rules-template.md" > .gemini/GEMINI.md
-    echo "Created .gemini/GEMINI.md with ADLC slash-command routing."
-  else
-    echo "Preserved existing .gemini/GEMINI.md (idempotent — not overwritten)."
-  fi
-fi
-```
-
-Advise the user: "`.gemini/GEMINI.md` now contains the ADLC slash-command routing rules. Antigravity will pick these up automatically when you open this project — no global `~/.gemini/GEMINI.md` setup required. **Add `.gemini/GEMINI.md` to your `.gitignore`** if you don't want to commit personal assistant rules to the repo, or commit it if the whole team uses Antigravity."
-
-### Step 9.5: Scaffold OpenCode/Codex Agent Rules
-
-Copy the OpenCode/Codex agent routing rules (`AGENTS.md`) into the project root so other AI coding assistants can pick up ADLC slash commands.
-
-**This step is idempotent — skip if `AGENTS.md` already exists** (preserve any project-local customizations).
-
-```bash
-# Verify template exists
-if [ ! -f "$TOOLKIT_PATH/templates/agents-rules-template.md" ]; then
-  echo "WARNING: agents-rules-template.md not found at $TOOLKIT_PATH/templates/. Skipping AGENTS.md setup."
-else
-  # Idempotent: only copy if destination does not already exist
-  if [ ! -f AGENTS.md ]; then
-    sed "s|ADLC_TOOLKIT_PATH|$TOOLKIT_PATH|g" \
-      "$TOOLKIT_PATH/templates/agents-rules-template.md" > AGENTS.md
-    echo "Created AGENTS.md with ADLC slash-command routing."
-  else
-    echo "Preserved existing AGENTS.md (idempotent — not overwritten)."
-  fi
-fi
-```
-
-Advise the user: "`AGENTS.md` now contains the ADLC slash-command routing rules for OpenCode and other assistants. Commit this file if you want other developers using those tools to have automatic routing to the ADLC pipeline."
-
-
-### Step 10: Scaffold Cross-Repo Config (Optional)
+### Step 9: Scaffold Cross-Repo Config (Optional)
 
 Ask the user: "Will this repo ever share features with other repos you also work on (e.g., an admin app + its API + an iOS app)? If yes, `/proceed` can coordinate REQs across them — this repo needs a `.adlc/config.yml` to list its siblings."
 
@@ -310,7 +311,7 @@ Advise the user:
 
 If the project is single-repo, skip the copy (no config file needed).
 
-### Step 11: Summary
+### Step 10: Summary
 1. Display the created directory structure
 2. Explain the ADLC workflow: `/spec` → `/validate` → `/architect` → `/validate` → implement → `/reflect` → `/review` → `/wrapup` (or use `/proceed` to run the full pipeline automatically)
 3. If cross-repo config was scaffolded, remind the user that `/proceed` will create worktrees in every touched sibling and open one PR per repo

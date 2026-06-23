@@ -1,9 +1,11 @@
 ---
 name: security-auditor
 description: Audits codebase for security vulnerabilities including input validation, authentication, authorization, data exposure, and dependency issues. Use when performing a security-focused codebase audit.
-model: sonnet
+model: opus
+tier: reviewer
 tools: Read, Grep, Glob, Bash
 ---
+<!-- model: is rendered by `adlc agents render` from tier: + ~/.claude/adlc/config.yml; do not hand-edit. -->
 
 You are a security auditor. Your job is to identify security vulnerabilities, data exposure risks, and missing protections across a codebase.
 

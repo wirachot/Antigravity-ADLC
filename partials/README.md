@@ -31,18 +31,43 @@ equivalent of `source`) into the calling skill's bash block. The function is
 then called and its return code or exported variables drive the skill's
 behavior. Examples:
 
-- `kimi-gate.sh` — defines `adlc_kimi_gate_check` returning 0/1/2. Companion
-  `kimi-gate.md` documents the return-code registry.
+- `delegate-gate.sh` — defines `adlc_delegate_gate_check` returning 0/1/2.
+  Companion `delegate-gate.md` documents the return-code registry.
+- `forge.sh` — the forge-neutral PR-operation adapter (REQ-520). Defines
+  `adlc_forge_pr_{create,ready,edit,view,list,merge,comment}` plus
+  `adlc_forge_provider` (GitHub/Azure DevOps, `auto` origin-URL detection). The
+  single home of `gh`/`az` PR commands; skills never call `gh pr` ops directly
+  (lint-enforced). Companion `forge.md` documents the op contract, the normalized
+  result/error vocabulary, and the ADO REST-via-PAT fallback.
 - `emit-step-telemetry.sh` — defines `_adlc_emit_step_telemetry` (the
   `/analyze` per-step telemetry resolve-and-emit). Companion
   `emit-step-telemetry.md` documents the caller-env contract and the
   call-site protocol: the source line and the `_adlc_emit_step_telemetry`
   call MUST live in the **same fenced block** (SKILL.md fenced blocks do not
   share shell state across steps), which is non-obvious enough to need the
-  `.md` (the `kimi-gate.md` precedent). It **self-sources**
-  `kimi-tools-path.sh`, so call sites do NOT separately source the
-  `$KIMI_TOOLS` resolver — sourcing this one partial both resolves
-  `$KIMI_TOOLS` and defines the function.
+  `.md` (the `delegate-gate.md` precedent). It **self-sources**
+  `delegate-tools-path.sh`, so call sites do NOT separately source the
+  `$DELEGATE_TOOLS` resolver — sourcing this one partial both resolves
+  `$DELEGATE_TOOLS` and defines the function.
+- `id-alloc.sh` — collision-safe id allocation with the **remote** as source of
+  truth (REQ-518). Defines `adlc_alloc_id <kind>` (prints `max(local,remote)+1`
+  and fast-forwards the local counter — which is a cache, not an authority),
+  `adlc_remote_high <kind>` (the remote high-water, 0 if none/unreachable), and
+  the kind mappers `adlc_id_kind_{counter,lockdir,prefix,scan}` /
+  `adlc_id_list_max`. One helper parameterized by `kind` (req|bug|lesson)
+  replaces the near-identical inline blocks in `/spec`, `/bugfix`, `/wrapup`.
+  Allocation runs inside the existing `mkdir`-lock with its symlink/TOCTOU
+  guards intact. The contract (same-fenced-block source-then-call, the
+  subshell-`exit` guard) lives in the partial's header comment rather than a
+  separate `.md`.
+- `id-recheck.sh` — pre-push / PR-time id collision recheck (REQ-518 BR-4/BR-8).
+  Defines `adlc_recheck_id <kind> <ID>` returning 0 (no collision on any
+  reachable remote, OR degraded-unreachable — never invents a collision from
+  absence of data), 1 (collision — prints the exact `adlc renumber` halt to
+  stderr), or 2 (usage error). It is a separate partial from `id-alloc.sh` so
+  recheck call sites don't load the full allocation machinery, but it sources
+  `id-alloc.sh` for the kind mappers + `adlc_remote_high` (one derivation
+  surface). Never blocks on the network. Contract in the header comment.
 
 Skills invoke a model-2 partial like:
 
@@ -60,8 +85,8 @@ contract that callers must honor (a return-code registry, an exported-variable
 schema, an emit-format spec, or any "must do this when calling me" rule). Pure
 text-emitting partials like `ethos-include.sh` don't need one — `cat ETHOS.md`
 is its own contract. Function-exporting partials almost always need one,
-because the call-site protocol is non-obvious. `kimi-gate.md` is the canonical
-example.
+because the call-site protocol is non-obvious. `delegate-gate.md` is the
+canonical example.
 
 ## Adding a new partial
 
@@ -72,5 +97,10 @@ example.
 - Update `/init` if the partial needs to be copied into consumer projects'
   `.adlc/partials/` (the existing `partials/*.sh` copy step covers that).
 - Update `/template-drift` if the partial is one consumer projects might
-  customize and you want drift detection (TODO: as of REQ-416, drift detection
-  for `partials/` is a known follow-up — not yet implemented).
+  customize and you want drift detection. Partial drift detection IS
+  implemented: `/template-drift` Step 3 ("Detect Partial Drift") diffs each
+  `~/.claude/skills/partials/*.sh` against the consumer's `.adlc/partials/`
+  copy and classifies it `synced` / `stale` / `missing` (no
+  intentional-customization escape hatch — any partial drift is reported as
+  `stale` by design, since a modified gate/ethos partial is the threat model
+  the check exists to catch).

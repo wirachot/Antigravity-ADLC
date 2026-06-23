@@ -1,7 +1,7 @@
 ---
 name: sprint
 description: Parallel pipeline orchestrator — launch multiple /proceed sessions concurrently across REQs, monitor progress, and report status. Use when the user says "sprint", "run these REQs in parallel", "proceed with all approved REQs", "launch a sprint", or wants to advance multiple requirements simultaneously.
-argument-hint: REQ IDs to sprint (e.g., "REQ-091 REQ-092 REQ-093") or "all" for all approved specs
+argument-hint: REQ IDs to sprint (e.g., "REQ-091 REQ-092 REQ-093") or "all"; add --workflow to run on the Dynamic Workflows engine
 ---
 
 # /sprint — Parallel Pipeline Orchestrator
@@ -32,6 +32,67 @@ Before proceeding, verify:
 
 ## Instructions
 
+### Step 0: Select the Sprint Engine
+
+`/sprint` has two engines behind one command (ADR-1):
+
+- **`workflow`** — the deterministic `adlc-sprint` Dynamic Workflows script, which restores each REQ's internal fan-out (explore trio, Phase-5 review panel) *while* keeping cross-REQ concurrency.
+- **`legacy`** — the background `pipeline-runner` engine documented in Steps 1–6 below. Always available; the hard fallback.
+
+**Decide which engine to run:**
+
+1. **Detect Dynamic Workflows availability**: the engine is *available* only if the `Workflow` tool is invocable in this session. Dynamic Workflows is research-preview and plan-gated, so it can be absent (headless/cron runs, non-qualifying plans). If you cannot invoke the `Workflow` tool, treat it as unavailable.
+2. **Read the `--workflow` flag** from `$ARGUMENTS`. Strip the flag token from the argument list before any REQ-ID parsing downstream, so it is never mistaken for a REQ id.
+3. **Select the engine**: choose `workflow` only when *available* **AND** (`--workflow` was passed **OR** the workflow engine has graduated to the default). Otherwise choose `legacy` — with no behavior change from today's `/sprint`.
+
+If the user passed `--workflow` but the `Workflow` tool is unavailable, say so explicitly and fall back to `legacy` rather than failing.
+
+**If the engine is `workflow`:**
+
+1. **Resolve the script path** with the standard two-level fallback (ADR-2): prefer the consumer-vendored copy, fall back to the toolkit copy.
+   - First choice: `.adlc/workflows/adlc-sprint.workflow.js` (present after the consumer ran `/init`).
+   - Fallback: `~/.claude/skills/workflows/adlc-sprint.workflow.js` (always present via the skills symlink).
+   - Use whichever path exists; if neither exists, report the missing script and fall back to `legacy`.
+2. **Invoke the `Workflow` tool** with the resolved script path and the documented args. The script itself is the orchestration engine (ADR-3) — this dispatcher is the only place the `Workflow` tool is invoked:
+   ```
+   Workflow({
+     scriptPath: <resolved path from step 1>,
+     args: {
+       reqs: <normalized REQ-id list from $ARGUMENTS, with --workflow stripped>,
+       integrationBranch: <resolved integration branch for the primary repo: "staging" in two-branch repos, else "main">,
+       answers: {}
+     }
+   })
+   ```
+   `args.reqs` is the same REQ-id list the legacy Step 1 would normalize (`REQ-xxx` form; expand `all` to every eligible spec). `args.integrationBranch` is a hint — the workflow's Phase-0 agent re-resolves it per repo against `origin/<branch>` and never hardcodes `main`. `args.answers` is `{}` on a first run.
+3. **The run returns `{results}` — one TERMINAL value per REQ.** Each result carries a `state` discriminant: `merged`, `pr-ready`, `blocked`, or `failed` (the workflow never throws on a halt — a halt is a *returned* `{state:'blocked', …}` value, so the run completes and the other REQs are unaffected). Inspect every result:
+   - **`merged` / `pr-ready` / `failed`** — report them as-is. A `failed` REQ has no user-answerable question; surface its `reason`/`detail` and move on (do not attempt a resume).
+   - **`blocked`** — this is a halt awaiting a human answer (a 3×-failed validation, a reflector `userFacing` question, or a merge conflict). Surface it to the user and **WAIT** for a reply — same "blocked → surface → re-engage" flow as the legacy engine's Step 4.6, but driven off the returned value rather than a state file. For each blocked REQ, print its `reason` and its `detail.questions` (when present) as a numbered list, e.g.:
+     ```
+     BLOCKER: REQ-091 is blocked (reflector-questions). The pipeline needs your answer before it can advance:
+       1. <detail.questions[0]>
+       2. <detail.questions[1]>
+     Reply with your guidance and I'll resume only REQ-091 from its halt.
+     ```
+     Other REQs (merged/pr-ready/failed) are already terminal — report them in the same turn so the user sees the full picture, not just the blocker.
+4. **Resume on the user's reply (`resumeFromRunId`).** When the user answers a blocked REQ, relaunch the SAME script with the prior run's id and the answer threaded through `args.answers[<REQ-id>]`:
+   ```
+   Workflow({
+     scriptPath: <same resolved path>,
+     resumeFromRunId: <the runId of the prior run>,
+     args: {
+       reqs: <same REQ-id list>,
+       integrationBranch: <same hint>,
+       answers: { '<blocked-REQ-id>': '<the user's reply>' }
+     }
+   })
+   ```
+   Keep `reqs` and `integrationBranch` identical to the prior run, and put the reply under the blocked REQ's id (answer multiple blocked REQs by adding more keys). The engine references `args.answers` **only** inside the blocked REQ's halt-prone agent prompts, so on resume only that REQ diverges from the journal cache and advances past its halt: every untouched REQ — and every already-`merged` REQ — replays from cache with **no re-executed side effects** (no recreated worktree, no re-implemented task, no double-merge). Re-inspect the returned `{results}` exactly as in step 3, repeating the surface→answer→resume loop until no REQ is `blocked`. (Steps 1–6 below do **not** apply to the workflow engine — they are the legacy engine.)
+
+5. **Orchestrator `blocker-cleared` auto-resume (REQ-485 BR-8 — primary engine per OQ-1 default).** A REQ held by a Phase-8 trial-merge conflict against an ahead REQ is **not** resumed by a user reply — it is resumed by the **orchestrator** once it merges that blocker *within the run*. This is a distinct resume channel from `args.answers` (a user answer): the script threads an orchestrator-generated `blocker-cleared` signal for the held REQ. The held workflow REQ does NOT self-resume — it already returned `{state:'blocked'}` and the post-merge unblock pass (in `adlc-sprint.workflow.js`) drives its resume by relaunching the SAME script via `resumeFromRunId` carrying the cleared signal in `args` (e.g. `args.blockerCleared[<held-REQ-id>] = <blocker-id>`, parallel to `args.answers`). Like `args.answers`, the signal is injected **surgically** — only into the held REQ's Phase-8 / halt-prone path — so every untouched and already-`merged` REQ replays byte-identical from the journal cache (no recreated worktree, no double-merge). The unblock pass rebases the held REQ's own worktree first; a clean rebase resumes it (it re-runs the now-passing trial-merge gate and merges, clearing its `blockers` entry — BR-11), a conflicting rebase aborts non-mutatingly and re-halts `{state:'blocked'}` with the materialized conflict files (BR-4), retry-bounded (BR-10). Held REQs on one blocker resume in REQ-483's deterministic order, one at a time (BR-6). See the "Self-healing serialization" section below for the cross-engine behavior contract.
+
+**Else (the engine is `legacy`)** — run Steps 1–6 below exactly as written. This is the existing background-`pipeline-runner` orchestration, unchanged.
+
 ### Step 1: Identify Sprint REQs
 
 1. If given specific REQ IDs (e.g., `REQ-091 REQ-092`), normalize each to `REQ-xxx` format
@@ -44,7 +105,7 @@ If no eligible REQs found, report "No eligible REQs for sprint" and stop.
 
 ### Step 2: Validate Sprint Eligibility
 
-**Precondition (LESSON-036):** each pipeline-runner branches its worktree from the integration branch (`origin/<integration-branch>` — `staging` in two-branch repos, else `main`), so a spec that exists only on an unmerged PR/feature branch is invisible to the pipeline even though it's on disk locally. `git fetch origin` first, then run the eligibility checks **against `origin/<integration-branch>`** (e.g. `git ls-tree -r --name-only origin/<integration-branch> | grep REQ-xxx`), not just the local working tree. If a freshly-`/spec`'d REQ isn't on the integration branch yet, mark it ineligible with issue `spec not on <integration-branch> — land its spec PR first`.
+**Precondition (LESSON-036):** each pipeline-runner branches its worktree from the integration branch (`origin/<integration-branch>` — `staging` in two-branch repos, else `main`), so a spec that exists only on an unmerged PR/feature branch is invisible to the pipeline even though it's on disk locally. `git fetch origin` first, then run the eligibility checks **against `origin/<integration-branch>`** (e.g. `git ls-tree -r --name-only origin/<integration-branch> | grep -E '(^|[^A-Za-z0-9])REQ-xxx([^0-9]|$)'` — the boundary anchors are load-bearing: a bare `grep REQ-120` also matches `REQ-1200`, marking a REQ eligible on the strength of a prefix-sibling's spec (REQ-524 / LESSON-016)), not just the local working tree. If a freshly-`/spec`'d REQ isn't on the integration branch yet, mark it ineligible with issue `spec not on <integration-branch> — land its spec PR first`.
 
 For each REQ, verify (against `origin/<integration-branch>` per the precondition above):
 1. The spec file exists at `.adlc/specs/REQ-xxx-*/requirement.md`
@@ -70,6 +131,8 @@ Report a pre-flight checklist:
 ```
 
 Remove ineligible REQs. If no REQs remain, stop.
+
+**In-Flight (cross-session) manifest (advisory, REQ-482).** Before confirming the lineup, build the cross-session manifest **once for the whole batch** (not per REQ — BR-14) and display it as a separate "In-Flight (cross-session)" section, so you can see other sessions' work on the shared remote and any coarse overlaps. Step 2 already ran `git fetch origin`, so invoke `/manifest` prefixing the same shell call with the hand-off vars `MANIFEST_SELF="REQ-a REQ-b …" MANIFEST_SKIP_FETCH=1` — `MANIFEST_SELF` lists **all** the batch's REQ ids (space-separated) so every batch member is marked self, and `MANIFEST_SKIP_FETCH=1` avoids a redundant fetch. Render the in-flight table plus any coarse `component`/`domain` overlaps among in-flight REQs. This is **advisory only** — it does NOT change eligibility, ordering, or scheduling, and a manifest-build failure is ignored (BR-7, BR-8, BR-9). It is separate from, and does not alter, the worktree-collision eligibility check above.
 
 **Max concurrent pipelines**: 5. If more than 5 are eligible, prioritize by:
 1. REQs explicitly listed in arguments (first priority)
@@ -115,7 +178,7 @@ Background `pipeline-runner` agents send an automatic notification when they fin
 2. **When an agent-completion notification arrives** (the platform delivers one per background agent): re-read every `pipeline-state.json` under `.adlc/specs/REQ-*/` and update the dashboard. Only redraw when state has actually changed — don't spam the user with identical dashboards.
 
    **Verify the agent's terminal-state claim before accepting it.** A pipeline-runner's final report MUST lead with one of `{merged, pr-ready, blocked, failed}` (see `~/.claude/agents/pipeline-runner.md` Terminal state contract). The orchestrator MUST NOT trust the claim at face value:
-   - For `merged` and `pr-ready` claims: run `gh pr view <prUrl> --json state,mergedAt` against every touched-repo PR before updating the dashboard.
+   - For `merged` and `pr-ready` claims: run `adlc_forge_pr_view <prUrl> --json state,mergedAt` (source `partials/forge.sh` in the same fence; forge-neutral per REQ-520) against every touched-repo PR before updating the dashboard.
      - If the agent claimed `merged` but the PR is `OPEN`: treat the claim as `pr-ready` and merge the PR per Step 5.
      - If the agent claimed `pr-ready` but the PR is `MERGED`: just move on (agent was conservative, no harm done).
      - If the PR is `CLOSED` (not merged) or in any other unexpected state: surface as a blocker.
@@ -152,15 +215,39 @@ Completed: 0/3 | Blocked: 0 | Running: 3
 
 **Default policy: merge as each pipeline completes.** When a pipeline finishes Phase 7 and is marked merge-ready, merge it immediately — don't wait for the batch. Faster feedback, less idle time, and the rebase cost on subsequent pipelines is paid as they reach merge-ready anyway (each one runs its own `/wrapup` Step 2 rebase-onto-main guard, so main drift is handled automatically).
 
+**Ordering enforcement (REQ-483).** When `/manifest`'s verdict (Step 2 pre-flight) shows footprint overlaps in the batch, merge the overlapping REQs in its **deterministic order** (earliest-published first, lower REQ tiebreak — BR-8) instead of as-they-complete, and gate **each** merge: `git -C <worktree> fetch origin <integrationBranch>` (refresh the tip), source `partials/trial-merge.sh`, then `adlc_trial_merge "<worktree>" origin/<integrationBranch>` before `adlc_forge_pr_merge`. **rc=1** → hold that REQ (`blocked`, surfaced for rebase); **rc=0** → merge; **rc=2/3** → `failed` (setup error, not a conflict). For overlapping **single-repo** REQs (whose pipeline-runners would otherwise self-merge as they complete), the orchestrator MUST hold the later-ranked one until the earlier merges — do not let both self-merge, or both could pass a stale-tip gate and collide at merge. Non-overlapping REQs still merge as they complete (parallel-by-default). Serializes **merges**, never implementation; computed in orchestrator code, not delegated (BR-10).
+
 **Who actually performs the merge depends on REQ topology** (see `~/.claude/agents/pipeline-runner.md` Phase 8):
 
 - **Single-repo REQ** (one touched repo in `pipeline-state.repos`): the pipeline-runner agent already merged its own PR in its Phase 8 and reports `merged`. The orchestrator's job here is to **verify** (per Step 4 verify gate) and move on — do NOT re-merge. If verification shows the PR is still `OPEN` despite the `merged` claim, fall through to the cross-repo flow below and merge it yourself.
 - **Cross-repo REQ** (multiple touched repos): the pipeline-runner stops at Phase 7 and reports `pr-ready`. The orchestrator owns merge sequencing and walks the per-REQ `mergeOrder` itself.
 
 The sequential flow when the orchestrator is the merge actor (cross-repo, or single-repo fallback after a failed agent merge):
-1. Merge the PR: `gh pr merge --squash --delete-branch`
+1. Merge the PR: `adlc_forge_pr_merge --squash --delete-branch` (source `partials/forge.sh` in the same fence)
 2. Pull main: `git checkout main && git pull`
 3. Move on — other pipelines keep running in the background
+
+**Post-merge unblock pass (REQ-485 — self-healing serialization).** REQ-483 holds a REQ with a `blocked` terminal when its pre-merge trial-merge conflicts (rc=1) against an ahead REQ. Today that held REQ is surfaced for a human to rebase + resume. For an unattended `/sprint` batch, **immediately after the orchestrator confirms REQ-A merged** (the merge above landed AND `repos[A].merged = true` was written), run an unblock pass so the batch self-heals — in place of parking the held REQ for a human:
+
+1. **Find held REQs (BR-2, BR-11 anchor).** Scan every other in-flight REQ's `pipeline-state.json` for a *still-present* `blockers` entry with `blockedBy == A`. Consider ONLY REQs whose `blockers` entry exists — a cleared entry means already-resumed-and-merged, so it is never re-processed (the BR-6 idempotency anchor). With nothing newly merged, this scan finds nothing and the pass is a no-op (deterministic + idempotent).
+2. **Order + serialize (BR-6).** If more than one REQ is held on A, order them by REQ-483's deterministic rule (earliest-published PR first, lower REQ tiebreak) and process them **one at a time** — the held REQs may themselves overlap, so resuming two concurrently would re-introduce the merge race REQ-483 eliminated.
+3. **Degrade-safe pre-check (BR-7).** For each held REQ, read its worktree path from its own `pipeline-state.json.repos[<id>].worktree` and its `currentPhase`. If the worktree has been torn down OR `currentPhase` is unrecorded, **skip with a one-line advisory** `manual resume needed for REQ-x (worktree gone / phase unrecorded)` — never an error or a batch crash.
+4. **Rebase ONLY the held REQ's own worktree (BR-2, BR-5).** Fetch and rebase in the held REQ's worktree — mutate nothing else (never REQ-A's branch/PR, never a third REQ's worktree):
+   ```sh
+   # held=<held REQ id>, hw=<its repos[<id>].worktree>, ib=<integrationBranch>
+   git -C "$hw" fetch origin "$ib" >/dev/null 2>&1
+   if git -C "$hw" rebase "origin/$ib" >/dev/null 2>&1; then
+     echo "rebase-clean: $held"          # → step 5 (auto-resume)
+   else
+     git -C "$hw" rebase --abort >/dev/null 2>&1 || :   # non-mutating restore
+     echo "rebase-conflict: $held"       # → step 6 (re-halt)
+   fi
+   ```
+   (Write any list-iteration over held REQs split-free — `printf '%s\n' "$held_ids" | while read -r held`, every path quoted — so it behaves identically under the executor shell, LESSON-329.)
+5. **Clean rebase → auto-resume (BR-3).** Re-dispatch a fresh `pipeline-runner` for the held REQ exactly as in Step 3, using its existing worktree (its `pipeline-state.json` already records `currentPhase`, so the runner resumes from there). The runner re-runs the now-passing Phase-8 trial-merge gate and proceeds to merge; on that merge it sets `repos[<id>].merged = true` AND clears its `blockers` entry (BR-11). Treat this re-dispatched runner like any other Step 3 pipeline (verify its terminal claim per Step 4). **Legacy-engine degrade (OQ-1 default / BR-7):** the common halt is the Phase-8 pre-merge gate, and a fresh runner from `currentPhase` resumes it cleanly — so the common case auto-resolves. If a held REQ halted mid-phase in a way the legacy engine cannot cleanly re-dispatch from, degrade to the surface-to-human advisory rather than forcing a resume.
+6. **Conflicting rebase → re-halt, never auto-resolve (BR-4, BR-10).** The `rebase --abort` already restored the worktree. Increment the held REQ's `blockers.rebaseAttempts`. If it is **below** the retry bound (default 1, overridable via `.adlc/config.yml` key `auto_rebase_max_attempts`; missing → 1), re-halt with `holdState: "held"` carrying the NOW-materialized conflict files and surface a human-resolution prompt. If it is **at/above** the bound, mark `holdState: "needs-manual-rebase"`, set `resolvedBlocker: A`, switch `blockedBy` to a `manual`/`self` sentinel (so this scan never re-picks it up — REQ-485 OQ-6), and surface for manual handling. Never auto-resolve, `-X` force, or "merge anyway" (ethos #6). BR-10 counts attempts **per blocker-merged event**.
+
+**Blocker-failed release (REQ-485 OQ-5 / ADR-8).** A blocker can also end **`failed`/abandoned** within the run — its PR will never merge, so no merge event fires the pass above and a REQ held *solely* on it would sit `blocked` to batch-end. When a REQ-A terminal is `failed`, for every held REQ whose ONLY live `blockedBy` is A (no other live blocker), treat the dead blocker as cleared and run the SAME rebase+resume path (steps 3–6 above) — its ordering constraint has dissolved. A REQ with *other* live blockers stays held. This is the in-run analogue of REQ-483's stale-PR safety. (Place this check where Step 4.6 / the merge loop observes a REQ's terminal state.)
 
 **Batch mode (only when N ≥ 3)**: when the sprint has 3 or more pipelines AND the orchestrator has strong prior knowledge that their diffs overlap (same files, same modules), switch to batching:
 1. Wait for all pipelines to reach merge-ready state (Phase 7 complete, blocked, or stopped)
@@ -206,6 +293,20 @@ After all pipelines complete (or are stopped), produce a sprint summary:
 - Lessons captured: 3
 ```
 
+## Self-healing serialization (REQ-485)
+
+REQ-483 made a `/sprint` batch **enforce** merge ordering: a REQ whose pre-merge trial-merge conflicts (rc=1) against an ahead REQ is held with a `blocked` terminal. REQ-485 makes the batch **self-heal** that hold, so an unattended batch ("launch it and walk away") does not sit idle behind a human nudge. The contract, across both engines:
+
+- **The trigger is blocker-merged → rebase-held-REQ → resume (BR-1, BR-2, BR-3).** Immediately after the orchestrator merges REQ-A *within the run*, it runs the post-merge unblock pass (legacy: Step 5; workflow: `unblockHeldReqs` after the merge barrier) over every REQ held with a still-present `blockers` entry where `blockedBy == A`. Each held REQ's OWN worktree is rebased onto the refreshed integration branch; a **clean** rebase resumes it from its recorded `currentPhase` (re-running the now-passing trial-merge gate, which proceeds to merge).
+- **A conflicting rebase is never auto-resolved (BR-4).** The rebase is `--abort`ed (worktree restored, non-mutating) and the REQ is re-halted carrying the NOW-materialized conflict files, surfaced for human resolution. Nothing is force-merged or "merged anyway" (ethos #6).
+- **Only the held REQ's own branch/worktree is mutated (BR-5).** The pass never touches the blocker's branch/PR (already merged) or any third REQ's worktree. Ordering is derived from merge events, never asserted by mutation.
+- **Deterministic, idempotent, serialized (BR-6).** With nothing newly merged the pass is a no-op. Multiple REQs held on one blocker unblock in REQ-483's deterministic order (earliest-published PR, lower REQ tiebreak) and are processed **one at a time** — held REQs may themselves overlap, so concurrent resume would reintroduce the merge race. The pass considers ONLY REQs whose `blockers` entry is still present (cleared on a successful resume — BR-11), which is the idempotency anchor.
+- **Degrade-safe (BR-7).** A held REQ whose worktree has been torn down or whose `currentPhase` is unrecorded is skipped with a `manual resume needed for REQ-x` advisory — never an error or a batch crash. Per OQ-1, the **workflow engine is the primary auto-resume path**; the **legacy engine** auto-resumes the common Phase-8-gate halt by re-dispatching a pipeline-runner from `currentPhase` and degrades to surface-to-human for any halt it cannot cleanly re-dispatch.
+- **Retry-bounded (BR-10).** A persistently-conflicting rebase stops after `auto_rebase_max_attempts` (default 1, overridable in `.adlc/config.yml`) and is marked `needs-manual-rebase` — not auto-re-triggered by future merges. Attempts are counted per blocker-merged event.
+- **Blocker-failed release (OQ-5).** If a blocker ends `failed`/abandoned within the run (its PR will never merge), a REQ held *solely* on it is released and re-attempted on the same rebase+resume path — its ordering constraint has dissolved. A REQ with other live blockers stays held.
+
+**Scope (v1).** Within-`/sprint`-run only (BR-9): the orchestrator merged the blocker itself, so "blocker-merged" is a known local event — there is **no cross-session watch/poll**. A blocker merged by a *different* session stays manual. **Solo `/proceed`** (not under `/sprint`) is unchanged — manual resume, because the human is present (BR-1). **Rebase conflicts are always human-resolved** (BR-4) — the machinery only detects and restores, never resolves.
+
 ## Error Handling
 
 - **Agent crash**: If a background agent stops unexpectedly, check its last `pipeline-state.json` state. Report the failure and offer to relaunch from the last completed phase.
@@ -236,3 +337,8 @@ If any check fails, mark the REQ ineligible with a specific issue in the pre-fli
 - It does not create specs — run `/spec` first for each REQ
 - It does not replace `/proceed` — it orchestrates multiple `/proceed` sessions
 - It does not originate REQs from different primary repos in a single sprint — every REQ in one `/sprint` invocation is assumed to originate from the repo the command was run in. Cross-repo REQs whose primary is a sibling must be sprinted from that sibling instead.
+- It does not require the workflow engine. Dynamic Workflows is a research-preview, plan-gated capability that can be absent (headless/cron runs, non-qualifying plans), so the workflow engine is never assumed present: `/sprint` runs the workflow engine only when the `Workflow` tool is invocable **and** the run opts in (`--workflow`, or once it graduates to default), and otherwise runs the legacy background-runner engine — the always-available, behavior-unchanged fallback. A `--workflow` request with the tool unavailable does not fail the sprint; it falls back to legacy with an explicit notice.
+- It does not make the two engines diverge in outcome. The workflow engine only changes *how* the pipeline is dispatched (restored per-REQ fan-out); it does not add, skip, or reorder pipeline phases relative to the legacy engine, and it does not gate the legacy engine behind the workflow engine.
+- It does not auto-resume a REQ blocked by a **cross-session** merge (REQ-485 BR-9). Self-healing serialization triggers only on a blocker this `/sprint` run merged itself — a known local event. There is no cross-session watch/poll; a blocker merged by a different session stays manual until a human resumes it.
+- It does not auto-resume a **solo `/proceed`** (not under `/sprint`) that hit a trial-merge block (REQ-485 BR-1). The human is present in that path, so the held REQ keeps today's manual rebase-and-resume behavior; only an orchestrated `/sprint` batch self-heals.
+- It does not auto-resolve a rebase conflict (REQ-485 BR-4). A conflicting auto-rebase is `--abort`ed and re-halted for human resolution; the machinery only detects and restores, never resolves, forces, or merges-anyway.
