@@ -1,6 +1,6 @@
 # Antigravity ADLC Toolkit
 
-Skills, agents, and templates for spec-driven development. Works with **Antigravity**, **OpenCode**, **Claude Code**, and any agent that reads `AGENTS.md`.
+Skills, agents, and templates for spec-driven development. Works with **Antigravity**.
 
 Designed to fully leverage native workspace tools (`write_to_file`, `multi_replace_file_content`, `generate_image`) for rapid, high-fidelity full-stack implementations with rich aesthetics.
 
@@ -9,8 +9,6 @@ Designed to fully leverage native workspace tools (`write_to_file`, `multi_repla
 | Assistant | Config File | Setup Required |
 |---|---|---|
 | **Antigravity** (Gemini) | `~/.gemini/GEMINI.md` → project `.gemini/GEMINI.md` | Run `install.sh` / `install.ps1` once, then `/init` per project |
-| **OpenCode** | `AGENTS.md` (this repo's root) | None — clone and use |
-| **Claude Code** | `.claude/settings.json` | Scaffolded by `/init` |
 
 ## What's Included
 
@@ -24,7 +22,7 @@ The toolkit provides specialized end-to-end workflows executed directly within y
 | **`/spec`** | Write requirement specs from feature requests. | Writing a requirement spec following the spec-driven ADLC process. | Understand Request → Derive Query Tags → Unified Retrieval → Determine REQ ID → Create Spec → Present for Review |
 | **`/architect`** | Design architecture and break requirement into tasks. | Designing architecture and breaking a requirement into implementable tasks. | Locate/Read Requirement → Explore Codebase → Design Architecture → Break Into Tasks → Update Status → Present for Review |
 | **`/proceed`** | End-to-end ADLC pipeline that takes a requirement from spec through to deployed. | When the user says "proceed", "run the pipeline", "take REQ-xxx to completion", or wants to advance a drafted requirement all the way through to deployment in one shot. | Step 0 (Setup) → Phase 1 (Validate Spec) → Phase 2 (Architect) → Phase 3 (Validate Tasks) → Phase 4 (Implement) → Phase 5 (Verify) → Phase 6 (PR) → Phase 7 (Cleanup/CI) → Phase 8 (Wrapup) |
-| **`/review`** | Multi-agent code review covering correctness, quality, architecture, test coverage, and security. | Performing a thorough code review of recent changes using multiple specialized review agents. | Determine Scope/Context → Read Changed Files → Launch Review Agents → Consolidate Findings → Present Review → Summary |
+| **`/review`** | Code review covering correctness, quality, architecture, test coverage, and security. | Performing a thorough code review of recent changes using specialized review checklists in your active session context. | Determine Scope/Context → Read Changed Files → Run Review Checklists Sequentially → Consolidate Findings → Present Review → Summary |
 | **`/bugfix`** | End-to-end bug fix workflow — report, analyze, fix, verify, ship (PR + merge + deploy + knowledge capture). | Fixing a bug using a streamlined workflow that skips the full spec ceremony but follows the same deployment strategy as a feature. | Phase 1 (Report) → Phase 2 (Analyze) → Phase 3 (Fix) → Phase 4 (Verify) → Phase 5 (Ship) → Phase 6 (Wrapup) |
 | **`/deploy`** | Auto-analyze, scaffold, deploy, and self‑heal applications on Coolify, Railway, AWS, or VPS (orchestrates sub‑skills). | Deploying applications with auto‑configuration and self‑healing runtime/build errors. | Parse Input → `/deploy-analyze` → `/deploy-env` → `/deploy-provision` → `/deploy‑trigger` → `/deploy‑heal` (loop) → Verification |
 | **`/deploy-analyze`** | Analyze deployment target, infer environment and configuration. | Determining target platform, gathering current state before provisioning. | Inspect target, enumerate services, produce deployment plan. |
@@ -42,10 +40,6 @@ Unlike legacy CLI approaches, this toolkit operates **natively within your chat 
 3. **Visual Excellence Priority**: When dealing with web/mobile interfaces, Antigravity adheres to modern design principles (glassmorphism, curated palettes, micro-animations) to ensure premium deliverables.
 
 ## Initialization & Setup
-
-### OpenCode (Zero Config)
-
-OpenCode reads `AGENTS.md` at the repo root automatically. Clone and start using slash commands immediately — no setup required.
 
 ### Antigravity (One-Time Install)
 
